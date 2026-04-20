@@ -1,0 +1,9 @@
+{
+  "use_doc_orientation_classify": false,
+  "use_doc_unwarping": false,
+  "use_table_recognition": true,
+  "chart_recognition": true,
+  "use_seal_recognition": false,
+  "use_formula_recognition": false,
+  "filter_labels": []
+}

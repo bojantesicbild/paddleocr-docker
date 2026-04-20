@@ -1,0 +1,20 @@
+services:
+  paddle-ocr:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: paddle-ocr-viewer:latest
+    container_name: paddle-ocr
+    ports:
+      - "8080:8080"
+    environment:
+      # Multilingual PP-OCRv5 checkpoint (covers CJK + Latin scripts).
+      # Override with "fr", "en", etc. if you want a language-specific model.
+      OCR_LANGUAGE: "ch"
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8080/health"]
+      interval: 30s
+      timeout: 5s
+      start_period: 90s
+      retries: 3

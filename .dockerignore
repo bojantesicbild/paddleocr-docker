@@ -1,0 +1,41 @@
+# VCS / editor
+.git
+.gitignore
+.DS_Store
+.vscode
+.idea
+
+# Local Python env (re-installed in container)
+venv
+__pycache__
+*.pyc
+*.pyo
+.pytest_cache
+.mypy_cache
+
+# Project artifacts not needed at runtime
+uploads
+out.md
+documents.json
+eng.traineddata
+PIPELINE.md
+OCR_Testing_Report.md
+DASHBOARD-AGENT-FIXES.md
+install.sh
+index.html
+server.py
+ocr_worker.py
+
+# Test + docs
+e2e
+docs
+my_config
+agent-backup-*
+
+# Claude Code workspace
+.claude
+.memory-bank
+CLAUDE.md
+
+# Plans
+/Users/bojantesic/.claude/plans

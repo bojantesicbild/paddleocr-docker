@@ -1,0 +1,17 @@
+# Core OCR (versions match the existing venv in /Users/bojantesic/git-tests/paddle-ocr-viewer/venv)
+paddleocr==3.4.0
+paddlepaddle==3.3.0
+paddlex==3.4.2
+
+# PDF → image and image I/O (used by app/pdf_split.py and app/ocr_service.py)
+PyMuPDF==1.27.1
+pillow==12.1.0
+
+# HTML table → GFM conversion (app/markdown_format.py)
+markdownify>=0.11
+
+# HTTP layer
+fastapi>=0.110,<1
+uvicorn[standard]>=0.27,<1
+python-multipart>=0.0.9
+pydantic>=2.7,<3

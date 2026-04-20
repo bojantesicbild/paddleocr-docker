@@ -1,0 +1,1 @@
+"""PaddleOCR → HillMetrics markdown microservice."""
