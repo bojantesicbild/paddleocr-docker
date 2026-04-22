@@ -8,7 +8,7 @@ from typing import Any
 
 import asyncio
 
-from fastapi import FastAPI, File, Form, HTTPException, Query, UploadFile
+from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, Query, UploadFile
 from fastapi.responses import FileResponse, JSONResponse
 from rq.exceptions import NoSuchJobError
 from rq.job import Job, JobStatus
@@ -18,6 +18,16 @@ from .schemas import ImageCrop, OCRMetadata, OCRResponse
 
 DEFAULT_SETTINGS_PATH = Path(__file__).resolve().parent.parent / "ocr_settings.json"
 INDEX_HTML_PATH = Path(__file__).resolve().parent / "templates" / "index.html"
+API_KEY = os.environ.get("OCR_API_KEY", "").strip()
+
+
+def require_api_key(x_api_key: str | None = Header(default=None, alias="X-API-Key")):
+    """FastAPI dependency. No-op when OCR_API_KEY is unset; otherwise requires
+    the header to match."""
+    if not API_KEY:
+        return
+    if not x_api_key or x_api_key != API_KEY:
+        raise HTTPException(status_code=401, detail="invalid or missing X-API-Key")
 
 
 def _load_default_settings() -> dict[str, Any]:
@@ -66,6 +76,12 @@ async def _wait_for_job(job: Job, timeout_s: int = 1800) -> dict[str, Any]:
     raise HTTPException(status_code=504, detail=f"job {job.id} timed out after {timeout_s}s")
 
 
+@app.get("/config", include_in_schema=False)
+def config() -> JSONResponse:
+    """Tells the UI whether it needs to send an X-API-Key header."""
+    return JSONResponse({"auth_required": bool(API_KEY)})
+
+
 @app.get("/health")
 def health() -> JSONResponse:
     try:
@@ -80,7 +96,7 @@ def index():
     return FileResponse(INDEX_HTML_PATH, media_type="text/html")
 
 
-@app.post("/ocr/image")
+@app.post("/ocr/image", dependencies=[Depends(require_api_key)])
 async def ocr_image(
     file: UploadFile = File(...),
     page_number: int = Form(1),
@@ -105,7 +121,7 @@ async def ocr_image(
     return _result_to_response(await _wait_for_job(job))
 
 
-@app.post("/ocr/pdf")
+@app.post("/ocr/pdf", dependencies=[Depends(require_api_key)])
 async def ocr_pdf(
     file: UploadFile = File(...),
     dpi: int = Form(200),
@@ -130,7 +146,7 @@ async def ocr_pdf(
     return _result_to_response(await _wait_for_job(job))
 
 
-@app.get("/jobs/{job_id}")
+@app.get("/jobs/{job_id}", dependencies=[Depends(require_api_key)])
 def job_status(job_id: str):
     try:
         job = Job.fetch(job_id, connection=ocr_jobs.get_redis())

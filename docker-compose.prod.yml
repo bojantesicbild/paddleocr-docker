@@ -1,0 +1,14 @@
+# Prod overlay. Use together with the base file:
+#   docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d
+# Or with GPU + TLS:
+#   docker compose -f docker-compose.yml -f docker-compose.gpu.yml \
+#                  -f docker-compose.prod.yml -f docker-compose.tls.yml up -d
+
+services:
+  paddle-ocr:
+    restart: always
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"

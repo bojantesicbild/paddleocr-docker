@@ -6,15 +6,24 @@ services:
     image: paddle-ocr-viewer:latest
     container_name: paddle-ocr
     ports:
-      - "8090:8080"
+      - "${HOST_PORT:-8090}:8080"
     environment:
-      # Multilingual PP-OCRv5 checkpoint (covers CJK + Latin scripts).
-      # Override with "fr", "en", etc. if you want a language-specific model.
-      OCR_LANGUAGE: "ch"
+      # PaddleOCR language code. "ch" is multilingual (CJK + Latin).
+      OCR_LANGUAGE: "${OCR_LANGUAGE:-ch}"
+      OCR_JOB_TIMEOUT: "${OCR_JOB_TIMEOUT:-1800}"
+      OCR_RESULT_TTL: "${OCR_RESULT_TTL:-86400}"
+      # When set, API requires X-API-Key header on /ocr/* and /jobs/*.
+      OCR_API_KEY: "${OCR_API_KEY:-}"
     restart: unless-stopped
+    volumes:
+      # Persist downloaded model weights so rebuilds don't re-download ~4 GB.
+      - paddle-models:/root/.paddlex
     healthcheck:
       test: ["CMD", "curl", "-fsS", "http://localhost:8080/health"]
       interval: 30s
       timeout: 10s
       start_period: 120s
       retries: 10
+
+volumes:
+  paddle-models:

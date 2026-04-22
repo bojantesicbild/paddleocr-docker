@@ -1,0 +1,18 @@
+{
+    email {$CADDY_EMAIL}
+}
+
+{$DOMAIN} {
+    # OCR requests can be large (PDFs, high-DPI images). Uncap body size.
+    request_body {
+        max_size 500MB
+    }
+
+    # VLM inference on a single page can take minutes; don't disconnect early.
+    reverse_proxy paddle-ocr:8080 {
+        transport http {
+            read_timeout 30m
+            write_timeout 30m
+        }
+    }
+}

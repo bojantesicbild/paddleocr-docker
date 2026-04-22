@@ -5,8 +5,9 @@
 #   ./extract.sh doc.pdf
 #   ./extract.sh scan.png result.md
 # Env:
-#   HOST  (default http://localhost:8090)
-#   DPI   (default 200, PDFs only)
+#   HOST           (default http://localhost:8090)
+#   DPI            (default 200, PDFs only)
+#   OCR_API_KEY    sent as X-API-Key header if set (server-side auth)
 #   SAVE_IMAGES=1  also write the base64 crops to <output>.images/region_*.png
 
 set -euo pipefail
@@ -38,7 +39,12 @@ echo "POST $endpoint ($input)" >&2
 tmp="$(mktemp)"
 trap 'rm -f "$tmp"' EXIT
 
-http=$(curl -sS -o "$tmp" -w '%{http_code}' -F "file=@${input}" "${extra[@]}" "$endpoint")
+auth_args=()
+if [[ -n "${OCR_API_KEY:-}" ]]; then
+  auth_args=(-H "X-API-Key: $OCR_API_KEY")
+fi
+
+http=$(curl -sS -o "$tmp" -w '%{http_code}' "${auth_args[@]}" -F "file=@${input}" "${extra[@]}" "$endpoint")
 if [[ "$http" != "200" ]]; then
   echo "API error ($http):" >&2
   jq . "$tmp" 2>/dev/null || cat "$tmp" >&2

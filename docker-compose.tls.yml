@@ -1,0 +1,44 @@
+# TLS overlay: adds a Caddy reverse proxy that terminates HTTPS with a
+# Let's Encrypt cert and proxies to paddle-ocr over the internal network.
+#
+# Prerequisites on the host:
+#   - DOMAIN's DNS A/AAAA record must already point at this machine.
+#   - Ports 80 and 443 must be reachable from the public internet (for ACME).
+#   - DOMAIN and CADDY_EMAIL set in .env.
+#
+# Usage:
+#   docker compose -f docker-compose.yml -f docker-compose.prod.yml \
+#                  -f docker-compose.tls.yml up -d
+
+services:
+  paddle-ocr:
+    # Remove any host port mapping inherited from the base compose file;
+    # Caddy reaches paddle-ocr via the compose-default network. `!reset`
+    # requires docker compose v2.20+.
+    ports: !reset []
+
+  caddy:
+    image: caddy:2-alpine
+    container_name: paddle-ocr-caddy
+    restart: always
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      DOMAIN: "${DOMAIN:?set DOMAIN in .env}"
+      CADDY_EMAIL: "${CADDY_EMAIL:?set CADDY_EMAIL in .env}"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    depends_on:
+      - paddle-ocr
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
+
+volumes:
+  caddy-data:
+  caddy-config:
