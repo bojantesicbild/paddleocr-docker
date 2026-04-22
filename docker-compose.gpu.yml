@@ -1,0 +1,19 @@
+# GPU override. Use together with the base compose file:
+#   docker compose -f docker-compose.yml -f docker-compose.gpu.yml up -d --build
+# Requires NVIDIA Container Toolkit on the host (standard on OVH GPU instances).
+
+services:
+  paddle-ocr:
+    build:
+      dockerfile: Dockerfile.gpu
+      args:
+        PRECACHE_MODELS: "1"
+    image: paddle-ocr-viewer:gpu
+    platform: linux/amd64
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]

@@ -1,0 +1,367 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>PaddleOCR-VL-1.5 — HillMetrics</title>
+<script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/dompurify@3.0.8/dist/purify.min.js"></script>
+<style>
+  :root {
+    --brand: #0b5cad; --brand-2: #1673d6; --ok: #2a7d2e; --err: #b42318;
+    --bg: #f7f8fa; --surface: #ffffff; --border: #e4e7ec; --muted: #667085;
+  }
+  * { box-sizing: border-box; }
+  body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; max-width: 1100px; margin: 2rem auto; padding: 0 1rem; color: #1d2939; background: var(--bg); }
+  h1 { font-size: 1.5rem; margin: 0 0 0.2rem; }
+  .sub { color: var(--muted); margin-bottom: 1.5rem; }
+  .sub a { color: var(--brand); text-decoration: none; }
+  .sub a:hover { text-decoration: underline; }
+
+  .card { background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 1.25rem; box-shadow: 0 1px 2px rgba(16,24,40,0.05); }
+  .card + .card { margin-top: 1rem; }
+
+  .dropzone { border: 2px dashed #c7cdd6; border-radius: 8px; padding: 2rem; text-align: center; cursor: pointer; transition: all 0.15s; background: #fafbfc; }
+  .dropzone:hover, .dropzone.drag { border-color: var(--brand); background: #eff5fc; }
+  .dropzone .icon { font-size: 2rem; opacity: 0.35; }
+  .dropzone p { margin: 0.5rem 0 0; color: var(--muted); font-size: 0.9rem; }
+  .dropzone .file-name { color: #1d2939; font-weight: 600; word-break: break-all; }
+  .dropzone input { display: none; }
+
+  .opts-group { margin-top: 1rem; padding-top: 1rem; border-top: 1px solid var(--border); }
+  .opts-title { font-size: 0.82rem; font-weight: 600; color: #344054; margin-bottom: 0.5rem; }
+  .opts-title .hint { font-weight: 400; color: var(--muted); font-size: 0.78rem; margin-left: 0.4rem; }
+  .opts { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 0.4rem 1.2rem; }
+  .opts label { display: flex; align-items: center; gap: 0.5rem; font-size: 0.88rem; color: #344054; cursor: pointer; }
+  .opts input[type=checkbox] { accent-color: var(--brand); width: 16px; height: 16px; }
+
+  .inline-fields { display: grid; grid-template-columns: 1fr 1fr; gap: 0.8rem; margin-top: 0.8rem; }
+  .inline-fields label { display: block; font-size: 0.8rem; color: var(--muted); font-weight: 500; margin-bottom: 0.2rem; }
+  .inline-fields input { width: 100%; padding: 0.45rem 0.6rem; border: 1px solid #d0d5dd; border-radius: 6px; font-size: 0.9rem; font-family: inherit; }
+  .inline-fields input:focus { outline: none; border-color: var(--brand); box-shadow: 0 0 0 3px rgba(11,92,173,0.12); }
+
+  .actions { display: flex; gap: 0.5rem; align-items: center; margin-top: 1rem; }
+  button { padding: 0.55rem 1.1rem; background: var(--brand); color: white; border: none; border-radius: 6px; cursor: pointer; font-size: 0.95rem; font-weight: 500; transition: background 0.1s; }
+  button:hover:not(:disabled) { background: var(--brand-2); }
+  button:disabled { background: #98a2b3; cursor: wait; }
+  button.ghost { background: transparent; color: #344054; border: 1px solid #d0d5dd; font-weight: 400; }
+  button.ghost:hover:not(:disabled) { background: #f2f4f7; }
+
+  #status { display: none; }
+  #status.visible { display: flex; gap: 1rem; align-items: center; padding: 0.8rem 1rem; border-radius: 6px; font-size: 0.9rem; background: #eff5fc; border-left: 3px solid var(--brand); margin-top: 1rem; }
+  #status.done { background: #edf7ee; border-left-color: var(--ok); }
+  #status.error { background: #fdecec; border-left-color: var(--err); white-space: pre-wrap; }
+  .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: var(--brand); animation: pulse 1.2s ease-in-out infinite; }
+  .dot.done { background: var(--ok); animation: none; }
+  .dot.err { background: var(--err); animation: none; }
+  @keyframes pulse { 0%,100% { opacity: 1 } 50% { opacity: 0.3 } }
+
+  .meta-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(170px, 1fr)); gap: 0.6rem; margin-top: 1rem; }
+  .meta-item { background: #f9fafb; border: 1px solid var(--border); border-radius: 6px; padding: 0.5rem 0.7rem; }
+  .meta-item .label { font-size: 0.7rem; color: var(--muted); text-transform: uppercase; letter-spacing: 0.05em; }
+  .meta-item .value { font-size: 0.95rem; font-weight: 600; font-family: ui-monospace, "SF Mono", Consolas, monospace; word-break: break-all; }
+  .settings-box { margin-top: 0.8rem; border: 1px solid var(--border); border-radius: 6px; background: #f9fafb; overflow: hidden; }
+  .settings-box header { display: flex; align-items: center; padding: 0.5rem 0.7rem; border-bottom: 1px solid var(--border); background: white; }
+  .settings-box header .label { font-size: 0.7rem; color: var(--muted); text-transform: uppercase; letter-spacing: 0.05em; font-weight: 600; }
+  .settings-box header .spacer { flex: 1; }
+  .settings-box header button { margin: 0; padding: 0.25rem 0.7rem; font-size: 0.75rem; }
+  .settings-box pre { margin: 0; padding: 0.6rem 0.8rem; font-family: ui-monospace, "SF Mono", Consolas, monospace; font-size: 0.8rem; color: #1d2939; overflow-x: auto; white-space: pre-wrap; word-break: break-all; }
+
+  .tabs { display: flex; gap: 0; border-bottom: 2px solid var(--border); margin-top: 0.5rem; align-items: center; }
+  .tab { padding: 0.6rem 1rem; cursor: pointer; border: none; background: none; color: var(--muted); font-size: 0.9rem; border-bottom: 2px solid transparent; margin-bottom: -2px; font-weight: 500; border-radius: 0; }
+  .tab:hover:not(.active) { color: #344054; background: transparent; }
+  .tab.active { color: var(--brand); border-bottom-color: var(--brand); }
+  .tabs .tab-spacer { flex: 1; }
+  .tabs button.ghost { margin: 0 0 0 0.4rem; padding: 0.3rem 0.8rem; font-size: 0.8rem; }
+  .panel { display: none; padding: 1rem 0; }
+  .panel.active { display: block; }
+
+  .rendered { border: 1px solid var(--border); padding: 1.5rem; border-radius: 6px; background: var(--surface); max-height: 700px; overflow-y: auto; line-height: 1.6; }
+  .rendered h1 { font-size: 1.35rem; margin-top: 1.2rem; } .rendered h2 { font-size: 1.15rem; margin-top: 1rem; } .rendered h3 { font-size: 1.02rem; }
+  .rendered table { border-collapse: collapse; margin: 0.8rem 0; width: 100%; font-size: 0.88rem; }
+  .rendered th, .rendered td { border: 1px solid var(--border); padding: 0.4rem 0.6rem; text-align: left; vertical-align: top; }
+  .rendered th { background: #f9fafb; font-weight: 600; }
+  .rendered blockquote { border-left: 3px solid var(--brand); margin: 0.8rem 0; padding: 0.3rem 0.8rem; color: #344054; font-weight: 600; background: #f9fafb; }
+  .rendered img { max-width: 100%; height: auto; border-radius: 4px; }
+  .rendered p { margin: 0.5rem 0; }
+  .rendered ul, .rendered ol { margin: 0.5rem 0; }
+
+  .raw-pre { background: #0d1117; color: #c9d1d9; padding: 1rem; border-radius: 6px; overflow: auto; font-size: 0.8rem; max-height: 700px; font-family: ui-monospace, "SF Mono", Consolas, monospace; line-height: 1.5; }
+
+  #images { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 0.8rem; margin-top: 0.5rem; }
+  #images figure { margin: 0; border: 1px solid var(--border); border-radius: 6px; padding: 0.4rem; background: var(--surface); }
+  #images img { max-width: 100%; height: auto; display: block; border-radius: 3px; }
+  #images figcaption { font-size: 0.75rem; color: var(--muted); margin-top: 0.3rem; text-align: center; font-family: ui-monospace, monospace; }
+</style>
+</head>
+<body>
+<h1>PaddleOCR-VL-1.5 → HillMetrics Markdown</h1>
+<div class="sub">Upload an image or PDF. Jobs run in the background. <a href="/docs">Swagger</a> · <a href="/health">/health</a></div>
+
+<div class="card">
+  <form id="f">
+    <div class="dropzone" id="drop">
+      <input type="file" id="file" accept="image/*,application/pdf" required>
+      <div class="icon">📄</div>
+      <p><b>Drop a file here</b> or click to browse</p>
+      <p id="filename" class="file-name"></p>
+    </div>
+
+    <div class="inline-fields">
+      <div>
+        <label>page_number (image only)</label>
+        <input type="number" id="page_number" value="1" min="1">
+      </div>
+      <div>
+        <label>dpi (PDF only)</label>
+        <input type="number" id="dpi" value="200" min="72" max="600">
+      </div>
+    </div>
+
+    <div class="opts-group">
+      <div class="opts-title">Extraction features</div>
+      <div class="opts">
+        <label><input type="checkbox" id="opt_chart"> chart recognition</label>
+        <label><input type="checkbox" id="opt_seal"> seal recognition</label>
+        <label><input type="checkbox" id="opt_orient"> doc orientation</label>
+        <label><input type="checkbox" id="opt_unwarp"> doc unwarping</label>
+        <label><input type="checkbox" id="opt_imgocr"> OCR for image blocks</label>
+      </div>
+    </div>
+
+    <div class="opts-group">
+      <div class="opts-title">Include content blocks <span class="hint">(off = filtered out of markdown)</span></div>
+      <div class="opts">
+        <label><input type="checkbox" id="inc_header"> header</label>
+        <label><input type="checkbox" id="inc_header_image"> header image</label>
+        <label><input type="checkbox" id="inc_footer"> footer</label>
+        <label><input type="checkbox" id="inc_footer_image"> footer image</label>
+        <label><input type="checkbox" id="inc_page_number"> page number</label>
+        <label><input type="checkbox" id="inc_footnote"> footnote</label>
+        <label><input type="checkbox" id="inc_aside_text"> aside text</label>
+      </div>
+    </div>
+
+    <div class="actions">
+      <button type="submit" id="submit">Run OCR</button>
+      <button type="button" id="reset" class="ghost">Reset</button>
+    </div>
+  </form>
+</div>
+
+<div id="status"></div>
+<div id="result"></div>
+
+<script>
+const $ = sel => document.querySelector(sel);
+const form = $('#f');
+const drop = $('#drop');
+const fileInput = $('#file');
+const fileNameEl = $('#filename');
+const submitBtn = $('#submit');
+const resetBtn = $('#reset');
+const statusEl = $('#status');
+const resultEl = $('#result');
+
+let lastMarkdown = '';
+let pollTimer = null;
+
+// --- drag-drop ---
+drop.addEventListener('click', () => fileInput.click());
+drop.addEventListener('dragover', e => { e.preventDefault(); drop.classList.add('drag'); });
+drop.addEventListener('dragleave', () => drop.classList.remove('drag'));
+drop.addEventListener('drop', e => {
+  e.preventDefault();
+  drop.classList.remove('drag');
+  if (e.dataTransfer.files.length) {
+    fileInput.files = e.dataTransfer.files;
+    showFile();
+  }
+});
+fileInput.addEventListener('change', showFile);
+function showFile() {
+  const f = fileInput.files[0];
+  fileNameEl.textContent = f ? `${f.name} · ${(f.size/1024).toFixed(0)} KB` : '';
+}
+
+resetBtn.addEventListener('click', () => {
+  form.reset();
+  fileNameEl.textContent = '';
+  resultEl.innerHTML = '';
+  lastMarkdown = '';
+  statusEl.className = '';
+  statusEl.innerHTML = '';
+  if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
+});
+
+// --- status display ---
+function setStatus(text, cls='', live=true) {
+  statusEl.className = 'visible' + (cls ? ' ' + cls : '');
+  const dotCls = cls === 'done' ? 'done' : cls === 'error' ? 'err' : '';
+  statusEl.innerHTML = `<span class="dot ${dotCls}"></span><span style="white-space:pre-wrap">${text}</span>`;
+}
+
+// --- build settings JSON from checkboxes ---
+function buildSettings() {
+  const s = {};
+  if ($('#opt_chart').checked) s.chart_recognition = true;
+  if ($('#opt_seal').checked) s.use_seal_recognition = true;
+  if ($('#opt_orient').checked) s.use_doc_orientation_classify = true;
+  if ($('#opt_unwarp').checked) s.use_doc_unwarping = true;
+  if ($('#opt_imgocr').checked) s.use_ocr_for_image_block = true;
+  for (const key of ['header','header_image','footer','footer_image','page_number','footnote','aside_text']) {
+    if ($(`#inc_${key}`).checked) s[`include_${key}`] = true;
+  }
+  return Object.keys(s).length ? JSON.stringify(s) : null;
+}
+
+// --- polling ---
+async function poll(jobId) {
+  const t0 = Date.now();
+  return new Promise((resolve) => {
+    async function tick() {
+      try {
+        const r = await fetch(`/jobs/${jobId}`);
+        if (!r.ok) { clearInterval(pollTimer); setStatus(`GET /jobs/${jobId} → ${r.status}`, 'error'); resolve(); return; }
+        const j = await r.json();
+        const elapsed = Math.round((Date.now() - t0) / 1000);
+        setStatus(`job ${jobId} · ${j.status} · ${elapsed}s`);
+        if (j.status === 'finished') { clearInterval(pollTimer); pollTimer = null; render(j.result); setStatus(`finished in ${elapsed}s`, 'done'); resolve(); }
+        else if (j.status === 'failed') { clearInterval(pollTimer); pollTimer = null; setStatus(`failed\n${j.error || ''}`, 'error'); resolve(); }
+      } catch (err) {
+        clearInterval(pollTimer); pollTimer = null; setStatus(`poll error: ${err.message}`, 'error'); resolve();
+      }
+    }
+    tick();
+    pollTimer = setInterval(tick, 2000);
+  });
+}
+
+// --- result rendering ---
+function escapeHtml(s) { return s.replace(/[&<>]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;'})[c]); }
+
+function render(result) {
+  const md = result.markdown || '';
+  const imgs = result.images || [];
+  const meta = result.metadata || {};
+  lastMarkdown = md;
+
+  const imgByRegion = Object.fromEntries(imgs.map(im => [im.region_id, im]));
+  const mdForRender = md.replace(/<image(?:\s[^>]*)?>\[(region_[\w]+)\]<\/image>/g, (m, rid) => {
+    const im = imgByRegion[rid];
+    if (!im) return m;
+    const alt = `${im.label || 'image'}: ${rid}`;
+    return `![${alt}](data:image/png;base64,${im.png_base64})`;
+  });
+
+  const rawHtml = marked.parse(mdForRender, { gfm: true, breaks: false });
+  const safeHtml = DOMPurify.sanitize(rawHtml, { ADD_TAGS: ['img'], ADD_ATTR: ['src', 'alt'] });
+
+  // Render scalar fields in the grid; render the settings object as its own
+  // pretty-printed block with a copy button.
+  const settings = meta.settings || {};
+  const metaCards = Object.entries(meta)
+    .filter(([k]) => k !== 'settings')
+    .map(([k, v]) => {
+      const val = (typeof v === 'object') ? JSON.stringify(v) : String(v);
+      return `<div class="meta-item"><div class="label">${k}</div><div class="value" title="${escapeHtml(val)}">${escapeHtml(val.length > 80 ? val.slice(0, 80) + '…' : val)}</div></div>`;
+    }).join('');
+  const settingsPretty = JSON.stringify(settings, null, 2);
+  const settingsBlock = Object.keys(settings).length
+    ? `<div class="settings-box">
+         <header><span class="label">settings</span><span class="spacer"></span><button type="button" class="ghost" id="copy-settings">Copy</button></header>
+         <pre id="settings-json">${escapeHtml(settingsPretty)}</pre>
+       </div>`
+    : '';
+
+  resultEl.innerHTML = `
+    <div class="card">
+      <div class="meta-grid">${metaCards}</div>
+      ${settingsBlock}
+      <div class="tabs">
+        <button type="button" class="tab active" data-panel="rendered">Rendered</button>
+        <button type="button" class="tab" data-panel="raw">Raw markdown (${md.length})</button>
+        <button type="button" class="tab" data-panel="crops">Image crops (${imgs.length})</button>
+        <div class="tab-spacer"></div>
+        <button type="button" class="ghost" id="copy">Copy .md</button>
+        <button type="button" class="ghost" id="dl">Download .md</button>
+      </div>
+      <div class="panel active" data-panel="rendered"><div class="rendered">${safeHtml}</div></div>
+      <div class="panel" data-panel="raw"><pre class="raw-pre">${escapeHtml(md)}</pre></div>
+      <div class="panel" data-panel="crops"><div id="images"></div></div>
+    </div>
+  `;
+
+  const grid = document.getElementById('images');
+  for (const im of imgs) {
+    const fig = document.createElement('figure');
+    fig.innerHTML = `<img src="data:image/png;base64,${im.png_base64}" alt="${im.region_id}"><figcaption>${im.region_id}<br><small style="color:var(--muted)">${im.label || 'image'}</small></figcaption>`;
+    grid.appendChild(fig);
+  }
+
+  resultEl.querySelectorAll('.tab').forEach(btn => {
+    btn.addEventListener('click', () => {
+      resultEl.querySelectorAll('.tab').forEach(b => b.classList.remove('active'));
+      resultEl.querySelectorAll('.panel').forEach(p => p.classList.remove('active'));
+      btn.classList.add('active');
+      resultEl.querySelector(`.panel[data-panel="${btn.dataset.panel}"]`).classList.add('active');
+    });
+  });
+
+  $('#copy').addEventListener('click', async () => {
+    try { await navigator.clipboard.writeText(lastMarkdown); $('#copy').textContent = 'Copied!'; setTimeout(() => $('#copy').textContent = 'Copy .md', 1500); }
+    catch { $('#copy').textContent = 'copy failed'; }
+  });
+  const copySettingsBtn = document.getElementById('copy-settings');
+  if (copySettingsBtn) {
+    copySettingsBtn.addEventListener('click', async () => {
+      try { await navigator.clipboard.writeText(settingsPretty); copySettingsBtn.textContent = 'Copied!'; setTimeout(() => copySettingsBtn.textContent = 'Copy', 1500); }
+      catch { copySettingsBtn.textContent = 'failed'; }
+    });
+  }
+  $('#dl').addEventListener('click', () => {
+    const blob = new Blob([lastMarkdown], { type: 'text/markdown' });
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = 'ocr-output.md';
+    a.click();
+    URL.revokeObjectURL(a.href);
+  });
+}
+
+// --- submit ---
+form.addEventListener('submit', async (e) => {
+  e.preventDefault();
+  resultEl.innerHTML = '';
+  lastMarkdown = '';
+  submitBtn.disabled = true;
+  setStatus('uploading…');
+  try {
+    const file = fileInput.files[0];
+    if (!file) { setStatus('pick a file first', 'error'); submitBtn.disabled = false; return; }
+    const isPdf = file.type === 'application/pdf' || file.name.toLowerCase().endsWith('.pdf');
+    const fd = new FormData();
+    fd.append('file', file);
+    const s = buildSettings();
+    if (s) fd.append('settings', s);
+    if (isPdf) fd.append('dpi', $('#dpi').value);
+    else fd.append('page_number', $('#page_number').value);
+
+    const endpoint = (isPdf ? '/ocr/pdf' : '/ocr/image') + '?async=1';
+    const r = await fetch(endpoint, { method: 'POST', body: fd });
+    if (r.status !== 202) {
+      const body = await r.text();
+      setStatus(`POST ${endpoint} → ${r.status}\n${body}`, 'error');
+      return;
+    }
+    const j = await r.json();
+    setStatus(`queued as ${j.job_id}`);
+    await poll(j.job_id);
+  } catch (err) {
+    setStatus(`error: ${err.message}`, 'error');
+  } finally {
+    submitBtn.disabled = false;
+  }
+});
+</script>
+</body>
+</html>

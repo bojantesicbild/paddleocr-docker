@@ -1,7 +1,8 @@
 # Core OCR (versions match the existing venv in /Users/bojantesic/git-tests/paddle-ocr-viewer/venv)
+# paddlepaddle / paddlepaddle-gpu is installed separately in the Dockerfile
+# because the package name + index URL differ between CPU and GPU builds.
 paddleocr==3.4.0
-paddlepaddle==3.3.0
-paddlex==3.4.2
+paddlex[ocr]==3.4.2
 
 # PDF → image and image I/O (used by app/pdf_split.py and app/ocr_service.py)
 PyMuPDF==1.27.1
@@ -15,3 +16,8 @@ fastapi>=0.110,<1
 uvicorn[standard]>=0.27,<1
 python-multipart>=0.0.9
 pydantic>=2.7,<3
+jinja2>=3.1,<4
+
+# Queue
+redis>=5.0,<6
+rq>=1.16,<2

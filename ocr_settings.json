@@ -1,9 +1,15 @@
 {
   "use_doc_orientation_classify": false,
   "use_doc_unwarping": false,
-  "use_table_recognition": true,
-  "chart_recognition": true,
+  "chart_recognition": false,
   "use_seal_recognition": false,
-  "use_formula_recognition": false,
-  "filter_labels": []
+  "use_ocr_for_image_block": false,
+
+  "include_header": false,
+  "include_header_image": false,
+  "include_footer": false,
+  "include_footer_image": false,
+  "include_page_number": false,
+  "include_footnote": false,
+  "include_aside_text": false
 }

@@ -53,14 +53,28 @@ placeholders embedded in the markdown.
 
 ## Build & run (Docker)
 
+### CPU (local dev, Mac/Linux)
+
 ```bash
-docker compose build        # ~10–15 min first time (wheels + model download baked into image)
-docker compose up           # listens on http://localhost:8080
+docker compose build        # ~10–15 min first time (wheels + model download baked in)
+docker compose up -d        # listens on http://localhost:8080
 curl -F file=@sample.pdf -F dpi=200 http://localhost:8080/ocr/pdf | jq .metadata
 ```
 
-The image is ~2 GB because the PP-StructureV3 weights are pre-cached during
-build so the container has a fast cold start and works offline.
+### GPU (OVH / any NVIDIA host)
+
+Requires NVIDIA Container Toolkit on the host and a CUDA 12.x-capable GPU.
+Build on the target host (or via `docker buildx --platform linux/amd64`) —
+`paddlepaddle-gpu` ships `linux_x86_64` wheels only.
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.gpu.yml build
+docker compose -f docker-compose.yml -f docker-compose.gpu.yml up -d
+```
+
+Both variants produce the same API on port 8080. The image is ~2 GB (CPU) /
+~5 GB (GPU, includes CUDA runtime) because the PP-StructureV3 weights are
+pre-cached during build so the container has a fast cold start and works offline.
 
 ## Configuration
 

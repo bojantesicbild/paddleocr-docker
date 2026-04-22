@@ -1,37 +1,50 @@
 # syntax=docker/dockerfile:1.6
+# GPU variant. Build with:
+#   docker compose -f docker-compose.yml -f docker-compose.gpu.yml build
+# Target platform is linux/amd64 only (paddlepaddle-gpu ships no arm64 CUDA wheels).
+
 # -------- Stage 1: build wheels --------
-FROM python:3.12-slim AS builder
+FROM nvidia/cuda:12.6.3-cudnn-runtime-ubuntu24.04 AS builder
 
 ENV PIP_DISABLE_PIP_VERSION_CHECK=1 \
-    PIP_NO_CACHE_DIR=1
+    PIP_NO_CACHE_DIR=1 \
+    PIP_BREAK_SYSTEM_PACKAGES=1 \
+    DEBIAN_FRONTEND=noninteractive
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
+        python3.12 \
+        python3.12-dev \
+        python3-pip \
         build-essential \
         ca-certificates \
         curl \
+    && ln -sf /usr/bin/python3.12 /usr/local/bin/python \
+    && ln -sf /usr/bin/python3.12 /usr/local/bin/python3 \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /build
 COPY requirements.txt .
 RUN pip wheel --wheel-dir=/wheels \
-        --extra-index-url https://www.paddlepaddle.org.cn/packages/stable/cpu/ \
-        paddlepaddle==3.3.0 \
+        --extra-index-url https://www.paddlepaddle.org.cn/packages/stable/cu126/ \
+        paddlepaddle-gpu==3.3.0 \
         -r requirements.txt
 
 
 # -------- Stage 2: runtime --------
-FROM python:3.12-slim AS runtime
+FROM nvidia/cuda:12.6.3-cudnn-runtime-ubuntu24.04 AS runtime
 
 ENV PIP_DISABLE_PIP_VERSION_CHECK=1 \
     PIP_NO_CACHE_DIR=1 \
+    PIP_BREAK_SYSTEM_PACKAGES=1 \
     PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
     PADDLE_PDX_DISABLE_MODEL_SOURCE_CHECK=True \
-    OCR_LANGUAGE=ch
+    OCR_LANGUAGE=ch \
+    DEBIAN_FRONTEND=noninteractive
 
-# Runtime system libraries required by opencv + paddlepaddle, plus redis+supervisor
-# for the single-container queue (supervisord runs redis + api + rq worker).
 RUN apt-get update && apt-get install -y --no-install-recommends \
+        python3.12 \
+        python3-pip \
         libgl1 \
         libglib2.0-0 \
         libgomp1 \
@@ -41,23 +54,22 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         curl \
         redis-server \
         supervisor \
+    && ln -sf /usr/bin/python3.12 /usr/local/bin/python \
+    && ln -sf /usr/bin/python3.12 /usr/local/bin/python3 \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /srv
 
 COPY --from=builder /wheels /wheels
 COPY requirements.txt .
-RUN pip install --no-index --find-links=/wheels paddlepaddle==3.3.0 -r requirements.txt \
+RUN pip install --no-index --find-links=/wheels paddlepaddle-gpu==3.3.0 -r requirements.txt \
     && rm -rf /wheels
 
 COPY pipeline_config.yaml ocr_settings.json supervisord.conf ./
 COPY app ./app
 
 # Pre-download PP-StructureV3 models so first request doesn't pay the download cost.
-# Off by default on CPU builds because loading all models at once exceeds Docker
-# Desktop's default 8 GB VM. Enable with --build-arg PRECACHE_MODELS=1 on hosts
-# with more RAM (e.g. OVH GPU instances, which default to PRECACHE_MODELS=1 via
-# docker-compose.gpu.yml).
+# docker-compose.gpu.yml sets PRECACHE_MODELS=1 by default for OVH-class hosts.
 ARG PRECACHE_MODELS=0
 RUN if [ "$PRECACHE_MODELS" = "1" ]; then \
       python -c "import os; os.environ['OCR_LANGUAGE']='${OCR_LANGUAGE}'; \
@@ -66,7 +78,7 @@ from app.ocr_service import get_pipeline; get_pipeline(); print('models cached')
 
 EXPOSE 8080
 
-HEALTHCHECK --interval=30s --timeout=5s --start-period=60s --retries=3 \
+HEALTHCHECK --interval=30s --timeout=10s --start-period=120s --retries=10 \
     CMD curl -fsS http://localhost:8080/health || exit 1
 
 CMD ["supervisord", "-n", "-c", "/srv/supervisord.conf"]

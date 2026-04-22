@@ -1,9 +1,10 @@
-"""PP-StructureV3 extraction. Ported from ocr_worker.py to return in-memory crops."""
+"""PaddleOCR-VL-1.5 extraction. Returns VL-native markdown + in-memory crops."""
 from __future__ import annotations
 
 import io
 import json
 import os
+import re
 import tempfile
 import threading
 from pathlib import Path
@@ -11,15 +12,52 @@ from typing import Any
 
 os.environ.setdefault("PADDLE_PDX_DISABLE_MODEL_SOURCE_CHECK", "True")
 
+
+def _patch_paddle_tensor_int():
+    """Workaround for paddle-cpu 3.3.0 bug: Tensor.__int__ breaks on shape-[1]
+    tensors with "only 0-dimensional arrays can be converted to Python scalars".
+    PaddleOCR-VL's VLM preprocessor hits this. .item() handles both 0-d and
+    1-element N-d tensors.
+    """
+    import paddle  # noqa: WPS433 — deliberate late import inside patcher
+    import numpy as np
+
+    def _lenient_int(var):
+        arr = np.array(var)
+        return int(arr.item() if arr.size == 1 else arr)
+
+    paddle.Tensor.__int__ = _lenient_int
+
+
+_patch_paddle_tensor_int()
+
 from PIL import Image
 
 _pipe = None
 _pipe_lock = threading.Lock()
 
-VISUAL_LABELS = {
-    "figure", "image", "chart", "equation",
-    "header_image", "footer_image", "flowchart", "table",
+_SETTINGS_PATH = Path(__file__).resolve().parent.parent / "ocr_settings.json"
+
+# Maps `include_<name>: true|false` settings keys to the PP-DocLayoutV3 label
+# that the VL pipeline filters via `markdown_ignore_labels`. A false flag means
+# "ignore this label" — consistent with the Baidu demo's behavior where the
+# defaults filter all of these out.
+_BLOCK_FILTER_FLAGS = {
+    "include_header": "header",
+    "include_header_image": "header_image",
+    "include_footer": "footer",
+    "include_footer_image": "footer_image",
+    "include_page_number": "number",
+    "include_footnote": "footnote",
+    "include_aside_text": "aside_text",
 }
+
+
+def _load_startup_settings() -> dict[str, Any]:
+    try:
+        return json.loads(_SETTINGS_PATH.read_text())
+    except FileNotFoundError:
+        return {}
 
 
 def get_pipeline():
@@ -27,36 +65,42 @@ def get_pipeline():
     if _pipe is None:
         with _pipe_lock:
             if _pipe is None:
-                from paddleocr import PPStructureV3
+                from paddleocr import PaddleOCRVL
 
-                lang = os.environ.get("OCR_LANGUAGE", "fr")
-                _pipe = PPStructureV3(lang=lang)
+                s = _load_startup_settings()
+                _pipe = PaddleOCRVL(
+                    pipeline_version="v1.5",
+                    use_doc_orientation_classify=s.get("use_doc_orientation_classify", False),
+                    use_doc_unwarping=s.get("use_doc_unwarping", False),
+                    use_chart_recognition=s.get("chart_recognition", False),
+                    use_seal_recognition=s.get("use_seal_recognition", False),
+                    # The multi-process VLM worker pool crashes on CPU paddle
+                    # ("only 0-dimensional arrays can be converted to Python scalars").
+                    # Disable — we're single-request-at-a-time anyway.
+                    use_queues=False,
+                )
     return _pipe
 
 
-def _bbox_overlap_ratio(a: list[float], b: list[float]) -> float:
-    x1 = max(a[0], b[0]); y1 = max(a[1], b[1])
-    x2 = min(a[2], b[2]); y2 = min(a[3], b[3])
-    if x2 <= x1 or y2 <= y1:
-        return 0.0
-    inter = (x2 - x1) * (y2 - y1)
-    area_a = max((a[2] - a[0]) * (a[3] - a[1]), 1)
-    return inter / area_a
-
-
-def _crop_png_bytes(img: Image.Image, bbox: list[float]) -> bytes | None:
-    w, h = img.size
-    x1, y1, x2, y2 = (int(round(c)) for c in bbox)
-    x1, y1 = max(0, x1), max(0, y1)
-    x2, y2 = min(w, x2), min(h, y2)
-    if x2 <= x1 or y2 <= y1:
-        return None
+def _pil_to_png_bytes(img: Image.Image) -> bytes:
     buf = io.BytesIO()
-    img.crop((x1, y1, x2, y2)).save(buf, format="PNG")
+    if img.mode != "RGB" and img.mode != "RGBA":
+        img = img.convert("RGB")
+    img.save(buf, format="PNG")
     return buf.getvalue()
 
 
+_MD_IMG_RE = re.compile(r"!\[[^\]]*\]\(([^)]+)\)")
+
+
 def extract(image_bytes: bytes, settings: dict[str, Any] | None = None) -> dict[str, Any]:
+    """Run PaddleOCR-VL-1.5 on a single page image.
+
+    Returns dict with:
+      markdown: final markdown (image refs already rewritten to HillMetrics tags)
+      crops: {region_id: png_bytes}
+      width, height: page dimensions
+    """
     settings = settings or {}
     img = Image.open(io.BytesIO(image_bytes))
     if img.mode != "RGB":
@@ -64,159 +108,78 @@ def extract(image_bytes: bytes, settings: dict[str, Any] | None = None) -> dict[
     w, h = img.size
 
     pipe = get_pipeline()
+
     predict_kwargs = {
-        "use_doc_orientation_classify": settings.get("use_doc_orientation_classify", False),
-        "use_doc_unwarping": settings.get("use_doc_unwarping", False),
-        "use_seal_recognition": settings.get("use_seal_recognition", False),
-        "use_table_recognition": settings.get("use_table_recognition", True),
-        "use_formula_recognition": settings.get("use_formula_recognition", False),
-        "use_chart_recognition": settings.get("chart_recognition", False),
-        "layout_threshold": settings.get("layout_threshold", 0.3),
-        "use_e2e_wired_table_rec_model": settings.get("use_e2e_wired_table_rec_model", False),
-        "use_e2e_wireless_table_rec_model": settings.get("use_e2e_wireless_table_rec_model", False),
-        "use_wired_table_cells_trans_to_html": settings.get("use_wired_table_cells_trans_to_html", True),
-        "use_wireless_table_cells_trans_to_html": settings.get("use_wireless_table_cells_trans_to_html", True),
-        "use_ocr_results_with_table_cells": settings.get("use_ocr_results_with_table_cells", True),
+        "use_doc_orientation_classify": settings.get("use_doc_orientation_classify"),
+        "use_doc_unwarping": settings.get("use_doc_unwarping"),
+        "use_chart_recognition": settings.get("chart_recognition"),
+        "use_seal_recognition": settings.get("use_seal_recognition"),
+        "use_ocr_for_image_block": settings.get("use_ocr_for_image_block"),
+        "layout_threshold": settings.get("layout_threshold"),
+        "use_queues": False,
     }
+    predict_kwargs = {k: v for k, v in predict_kwargs.items() if v is not None}
+
+    # Build the ignore-label list from the include_* flags. Anything not
+    # explicitly included is filtered out of the final markdown.
+    ignore_labels = [
+        label for key, label in _BLOCK_FILTER_FLAGS.items() if not settings.get(key, False)
+    ]
+    predict_kwargs["markdown_ignore_labels"] = ignore_labels
 
     with tempfile.TemporaryDirectory() as td:
-        tmp_dir = Path(td)
-        img_path = tmp_dir / "page.png"
+        tmp = Path(td)
+        img_path = tmp / "page.png"
         img.save(img_path, format="PNG")
-        results = pipe.predict(str(img_path), **predict_kwargs)
-        if not results:
-            return {"blocks": [], "text_lines": [], "width": w, "height": h, "crops": {}}
+        results = list(pipe.predict(str(img_path), **predict_kwargs))
 
-        r = results[0]
-        json_dir = tmp_dir / "layout_json"
-        json_dir.mkdir(exist_ok=True)
-        r.save_to_json(str(json_dir))
-        saved_json = json_dir / f"{img_path.stem}_res.json"
-        data = json.loads(saved_json.read_text())
+    if not results:
+        return {"markdown": "", "crops": {}, "width": w, "height": h}
 
-    blocks: list[dict[str, Any]] = []
-    parsing_list = data.get("parsing_res_list", [])
+    r = results[0]
+    md_info = r._to_markdown(pretty=False)
+    raw_markdown = md_info.get("markdown_texts") or ""
+    md_images: dict[str, Image.Image] = md_info.get("markdown_images") or {}
 
-    crops: dict[str, bytes] = {}
+    # Build path → label map by walking the VL pipeline's per-block structure.
+    # Blocks with images expose block.image["path"], matched against the paths
+    # embedded in markdown's ![](path) refs.
+    path_to_label: dict[str, str] = {}
+    for block in r.get("parsing_res_list", []):
+        img = getattr(block, "image", None)
+        if img and img.get("path"):
+            label = (getattr(block, "label", "") or "image").lower()
+            path_to_label[img["path"]] = label
 
-    for i, block in enumerate(parsing_list):
-        bbox = block.get("block_bbox", [0, 0, 0, 0])
-        label = block.get("block_label", "unknown")
-        entry = {
-            "label": label,
-            "bbox": [round(c, 1) for c in bbox],
-            "content": block.get("block_content", ""),
-            "block_idx": i,
+    # Assign stable region IDs in path-order as they appear in markdown
+    path_to_region: dict[str, str] = {}
+    for idx, path in enumerate(_MD_IMG_RE.findall(raw_markdown), start=1):
+        path_to_region.setdefault(path, f"region_{idx}")
+
+    crops: dict[str, dict[str, Any]] = {}
+    for path, region_id in path_to_region.items():
+        pil = md_images.get(path)
+        if pil is None:
+            continue
+        crops[region_id] = {
+            "png": _pil_to_png_bytes(pil),
+            "label": path_to_label.get(path, "image"),
         }
-        if label.lower() in VISUAL_LABELS:
-            png = _crop_png_bytes(img, bbox)
-            if png is not None:
-                region_id = f"region_{i}"
-                crops[region_id] = png
-                entry["region_id"] = region_id
-        blocks.append(entry)
 
-    # Deduplicate overlapping blocks (drop smaller block overlapping a larger one >60%)
-    keep = [True] * len(blocks)
-    for i in range(len(blocks)):
-        if not keep[i]:
-            continue
-        for j in range(len(blocks)):
-            if i == j or not keep[j]:
-                continue
-            area_i = (blocks[i]["bbox"][2] - blocks[i]["bbox"][0]) * (blocks[i]["bbox"][3] - blocks[i]["bbox"][1])
-            area_j = (blocks[j]["bbox"][2] - blocks[j]["bbox"][0]) * (blocks[j]["bbox"][3] - blocks[j]["bbox"][1])
-            if area_i <= area_j and _bbox_overlap_ratio(blocks[i]["bbox"], blocks[j]["bbox"]) > 0.6:
-                keep[i] = False
-                break
-    blocks = [b for b, k in zip(blocks, keep) if k]
-    for i, b in enumerate(blocks):
-        b["block_idx"] = i
+    # Rewrite ![…](path) → <image label="…">[region_id]</image>
+    def _replace(m: re.Match) -> str:
+        path = m.group(1)
+        rid = path_to_region.get(path)
+        if not rid:
+            return m.group(0)
+        label = path_to_label.get(path, "image")
+        return f'<image label="{label}">[{rid}]</image>'
 
-    # Extract text lines and tie them to blocks
-    text_lines: list[dict[str, Any]] = []
-    ocr_res = data.get("overall_ocr_res", {})
-    rec_texts = ocr_res.get("rec_texts", [])
-    rec_polys = ocr_res.get("rec_polys", [])
-    rec_scores = ocr_res.get("rec_scores", [])
-
-    for i in range(len(rec_texts)):
-        poly = [[int(p[0]), int(p[1])] for p in rec_polys[i]]
-        line_cx = (poly[0][0] + poly[2][0]) / 2
-        line_cy = (poly[0][1] + poly[2][1]) / 2
-        block_idx = -1
-        for bi, blk in enumerate(blocks):
-            bx1, by1, bx2, by2 = blk["bbox"]
-            if bx1 <= line_cx <= bx2 and by1 <= line_cy <= by2:
-                block_idx = bi
-                break
-        text_lines.append({
-            "text": rec_texts[i],
-            "bbox": poly,
-            "score": round(float(rec_scores[i]), 4),
-            "block_idx": block_idx,
-        })
-
-    lines_by_block: dict[int, list[dict[str, Any]]] = {}
-    for tl in text_lines:
-        bi = tl["block_idx"]
-        if bi >= 0:
-            lines_by_block.setdefault(bi, []).append(tl)
-
-    # Rebuild block content from text lines (skip HTML table / structured chart content)
-    for bi, block_lines in lines_by_block.items():
-        if bi >= len(blocks):
-            continue
-        existing = blocks[bi].get("content", "") or ""
-        if existing.startswith("<html") or existing.startswith("<table"):
-            continue
-        if blocks[bi]["label"] == "chart" and "|" in existing:
-            continue
-        blocks[bi]["content"] = " ".join(tl["text"] for tl in block_lines)
-
-    # Detect tabular structure in "content" blocks: 4+ lines forming rows with 2+ cells
-    for bi, blk in enumerate(blocks):
-        if blk["label"] != "content":
-            continue
-        block_lines = lines_by_block.get(bi, [])
-        if len(block_lines) < 4:
-            continue
-        sorted_lines = sorted(block_lines, key=lambda tl: (tl["bbox"][0][1] + tl["bbox"][2][1]) / 2)
-        rows: list[list[dict[str, Any]]] = []
-        current_row = [sorted_lines[0]]
-        for tl in sorted_lines[1:]:
-            prev_cy = sum((l["bbox"][0][1] + l["bbox"][2][1]) / 2 for l in current_row) / len(current_row)
-            cur_cy = (tl["bbox"][0][1] + tl["bbox"][2][1]) / 2
-            if abs(cur_cy - prev_cy) < 15:
-                current_row.append(tl)
-            else:
-                rows.append(current_row)
-                current_row = [tl]
-        rows.append(current_row)
-        multi_cell_rows = sum(1 for r in rows if len(r) >= 2)
-        if multi_cell_rows < 3:
-            continue
-        html_parts = ["<table><tbody>"]
-        for row in rows:
-            row_sorted = sorted(row, key=lambda tl: tl["bbox"][0][0])
-            html_parts.append("<tr>")
-            for cell in row_sorted:
-                html_parts.append(f"<td>{cell['text']}</td>")
-            html_parts.append("</tr>")
-        html_parts.append("</tbody></table>")
-        blk["content"] = "".join(html_parts)
-        blk["label"] = "table"
-        if "region_id" not in blk:
-            png = _crop_png_bytes(img, blk["bbox"])
-            if png is not None:
-                region_id = f"region_{bi}"
-                crops[region_id] = png
-                blk["region_id"] = region_id
+    markdown = _MD_IMG_RE.sub(_replace, raw_markdown).strip()
 
     return {
-        "blocks": blocks,
-        "text_lines": text_lines,
+        "markdown": markdown,
+        "crops": crops,
         "width": w,
         "height": h,
-        "crops": crops,
     }

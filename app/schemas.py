@@ -13,7 +13,7 @@ class ImageCrop(BaseModel):
 
 class OCRMetadata(BaseModel):
     library: str = "paddleocr"
-    model: str = "PP-StructureV3"
+    model: str = "PaddleOCR-VL-1.5"
     version: str = "3.4.0"
     language: str
     page_count: int
