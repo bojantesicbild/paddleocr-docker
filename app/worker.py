@@ -9,7 +9,7 @@ from __future__ import annotations
 import logging
 import sys
 
-from rq import Worker
+from rq import SimpleWorker
 
 from . import jobs, ocr_service
 
@@ -27,7 +27,10 @@ def main() -> None:
     log.info("pipeline warm, starting RQ worker on queue '%s'", jobs.QUEUE_NAME)
 
     queue = jobs.get_queue()
-    worker = Worker([queue], connection=jobs.get_redis())
+    # SimpleWorker runs jobs in the same process (no fork). This is required
+    # for GPU work because CUDA contexts do not survive fork() — the default
+    # forking Worker raises cudaErrorInitializationError in the child.
+    worker = SimpleWorker([queue], connection=jobs.get_redis())
     worker.work(logging_level="INFO")
 
 
