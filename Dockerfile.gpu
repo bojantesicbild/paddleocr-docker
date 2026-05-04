@@ -39,6 +39,8 @@ ENV PIP_DISABLE_PIP_VERSION_CHECK=1 \
     PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
     PADDLE_PDX_DISABLE_MODEL_SOURCE_CHECK=True \
+    PADDLE_PDX_CACHE_HOME=/tmp/.paddlex \
+    HOME=/tmp \
     OCR_LANGUAGE=ch \
     DEBIAN_FRONTEND=noninteractive
 
@@ -71,10 +73,15 @@ COPY app ./app
 # Pre-download PP-StructureV3 models so first request doesn't pay the download cost.
 # docker-compose.gpu.yml sets PRECACHE_MODELS=1 by default for OVH-class hosts.
 ARG PRECACHE_MODELS=0
-RUN if [ "$PRECACHE_MODELS" = "1" ]; then \
+RUN mkdir -p /tmp/.paddlex && chmod -R 0777 /tmp/.paddlex && \
+    if [ "$PRECACHE_MODELS" = "1" ]; then \
       python -c "import os; os.environ['OCR_LANGUAGE']='${OCR_LANGUAGE}'; \
 from app.ocr_service import get_pipeline; get_pipeline(); print('models cached')"; \
-    else echo "skipping model pre-cache (PRECACHE_MODELS=0)"; fi
+    else echo "skipping model pre-cache (PRECACHE_MODELS=0)"; fi && \
+    chmod -R 0777 /tmp/.paddlex
+
+# Make app dirs writable for non-root runtime users (OVH AI uses UID 42420)
+RUN chmod -R 0777 /srv /var/log /var/lib/redis /var/run || true
 
 EXPOSE 8080
 
