@@ -42,7 +42,13 @@ ENV PIP_DISABLE_PIP_VERSION_CHECK=1 \
     PADDLE_PDX_CACHE_HOME=/tmp/.paddlex \
     HOME=/tmp \
     OCR_LANGUAGE=ch \
+    OMP_NUM_THREADS=4 \
     DEBIAN_FRONTEND=noninteractive
+
+# Optional API key baked at build time (passed via --build-arg from a CI secret).
+# When empty, the API runs without auth. When set, clients must send X-API-Key.
+ARG OCR_API_KEY=""
+ENV OCR_API_KEY=${OCR_API_KEY}
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
         python3.12 \

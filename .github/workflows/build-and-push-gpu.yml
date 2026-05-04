@@ -38,6 +38,8 @@ jobs:
           file: Dockerfile.gpu
           push: true
           platforms: linux/amd64
+          build-args: |
+            OCR_API_KEY=${{ secrets.OCR_API_KEY }}
           tags: |
             ghcr.io/${{ github.repository_owner }}/paddleocr-docker:gpu-latest
             ghcr.io/${{ github.repository_owner }}/paddleocr-docker:gpu-${{ github.sha }}
