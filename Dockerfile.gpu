@@ -73,11 +73,13 @@ COPY requirements.txt .
 RUN pip install --no-index --find-links=/wheels paddlepaddle-gpu==3.3.0 -r requirements.txt \
     && rm -rf /wheels
 
-COPY pipeline_config.yaml ocr_settings.json supervisord.conf ./
+COPY ocr_settings.json supervisord.conf ./
 COPY app ./app
 
-# Pre-download PP-StructureV3 models so first request doesn't pay the download cost.
-# docker-compose.gpu.yml sets PRECACHE_MODELS=1 by default for OVH-class hosts.
+# Pre-download PaddleOCR-VL-1.5 weights so first request doesn't pay the
+# download cost. The CI workflow + docker-compose.gpu.yml both set
+# PRECACHE_MODELS=1 — this bakes ~5 GB of weights into the image and makes
+# first-boot ~30s rather than 5–10 min.
 ARG PRECACHE_MODELS=0
 RUN mkdir -p /tmp/.paddlex && chmod -R 0777 /tmp/.paddlex && \
     if [ "$PRECACHE_MODELS" = "1" ]; then \

@@ -17,7 +17,8 @@ services:
     restart: unless-stopped
     volumes:
       # Persist downloaded model weights so rebuilds don't re-download ~4 GB.
-      - paddle-models:/root/.paddlex
+      # Path matches PADDLE_PDX_CACHE_HOME set in both Dockerfiles.
+      - paddle-models:/tmp/.paddlex
     healthcheck:
       test: ["CMD", "curl", "-fsS", "http://localhost:8080/health"]
       interval: 30s

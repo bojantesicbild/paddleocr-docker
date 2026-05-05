@@ -40,6 +40,7 @@ jobs:
           platforms: linux/amd64
           build-args: |
             OCR_API_KEY=${{ secrets.OCR_API_KEY }}
+            PRECACHE_MODELS=1
           tags: |
             ghcr.io/${{ github.repository_owner }}/paddleocr-docker:gpu-latest
             ghcr.io/${{ github.repository_owner }}/paddleocr-docker:gpu-${{ github.sha }}

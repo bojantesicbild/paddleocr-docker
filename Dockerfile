@@ -27,7 +27,10 @@ ENV PIP_DISABLE_PIP_VERSION_CHECK=1 \
     PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
     PADDLE_PDX_DISABLE_MODEL_SOURCE_CHECK=True \
-    OCR_LANGUAGE=ch
+    PADDLE_PDX_CACHE_HOME=/tmp/.paddlex \
+    HOME=/tmp \
+    OCR_LANGUAGE=ch \
+    OMP_NUM_THREADS=4
 
 # Runtime system libraries required by opencv + paddlepaddle, plus redis+supervisor
 # for the single-container queue (supervisord runs redis + api + rq worker).
@@ -50,23 +53,24 @@ COPY requirements.txt .
 RUN pip install --no-index --find-links=/wheels paddlepaddle==3.3.0 -r requirements.txt \
     && rm -rf /wheels
 
-COPY pipeline_config.yaml ocr_settings.json supervisord.conf ./
+COPY ocr_settings.json supervisord.conf ./
 COPY app ./app
 
-# Pre-download PP-StructureV3 models so first request doesn't pay the download cost.
-# Off by default on CPU builds because loading all models at once exceeds Docker
-# Desktop's default 8 GB VM. Enable with --build-arg PRECACHE_MODELS=1 on hosts
-# with more RAM (e.g. OVH GPU instances, which default to PRECACHE_MODELS=1 via
-# docker-compose.gpu.yml).
+# Pre-download PaddleOCR-VL-1.5 weights so first request doesn't pay the
+# download cost. Off by default on CPU builds because loading the VLM at
+# build time needs ~10 GB RAM. Enable with --build-arg PRECACHE_MODELS=1
+# on hosts with more RAM (the GPU image always sets it).
 ARG PRECACHE_MODELS=0
-RUN if [ "$PRECACHE_MODELS" = "1" ]; then \
+RUN mkdir -p /tmp/.paddlex && chmod -R 0777 /tmp/.paddlex && \
+    if [ "$PRECACHE_MODELS" = "1" ]; then \
       python -c "import os; os.environ['OCR_LANGUAGE']='${OCR_LANGUAGE}'; \
 from app.ocr_service import get_pipeline; get_pipeline(); print('models cached')"; \
-    else echo "skipping model pre-cache (PRECACHE_MODELS=0)"; fi
+    else echo "skipping model pre-cache (PRECACHE_MODELS=0)"; fi && \
+    chmod -R 0777 /tmp/.paddlex
 
 EXPOSE 8080
 
-HEALTHCHECK --interval=30s --timeout=5s --start-period=60s --retries=3 \
+HEALTHCHECK --interval=30s --timeout=10s --start-period=120s --retries=10 \
     CMD curl -fsS http://localhost:8080/health || exit 1
 
 CMD ["supervisord", "-n", "-c", "/srv/supervisord.conf"]

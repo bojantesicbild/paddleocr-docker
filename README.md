@@ -142,30 +142,56 @@ docker run --rm --gpus all nvidia/cuda:12.6.3-cudnn-runtime-ubuntu24.04 nvidia-s
 
 ### Deploy
 
+Two routes — pulling a pre-built image from GHCR is much faster than
+building on the OVH VM (skips ~30 min of wheel + model bake):
+
+#### Option 1 — pull from GHCR (recommended)
+
+CI builds `linux/amd64` GPU images on every push to `main` with
+`PRECACHE_MODELS=1` so the image already contains the ~5 GB of weights.
+
 ```bash
-# Clone and configure
 git clone <this repo>
 cd paddle-ocr-docker
 cp .env.example .env
-# Set OCR_API_KEY (recommended), DOMAIN, CADDY_EMAIL in .env
+# Set OCR_API_KEY, DOMAIN, CADDY_EMAIL in .env
 
-# A) GPU + prod, direct HTTP on $HOST_PORT (behind your own load balancer / VPN)
+# Pull the GHCR image and tag it as the local name compose expects.
+docker pull ghcr.io/<your-gh-org>/paddleocr-docker:gpu-latest
+docker tag  ghcr.io/<your-gh-org>/paddleocr-docker:gpu-latest paddle-ocr-viewer:gpu
+
+# A) GPU + prod, direct HTTP (behind your own LB / VPN)
 docker compose -f docker-compose.yml \
                -f docker-compose.gpu.yml \
                -f docker-compose.prod.yml \
-               up -d --build
+               up -d   # no --build; uses the pulled image
 
 # B) GPU + prod + automatic HTTPS (Let's Encrypt via Caddy)
 docker compose -f docker-compose.yml \
                -f docker-compose.gpu.yml \
                -f docker-compose.prod.yml \
                -f docker-compose.tls.yml \
-               up -d --build
+               up -d
 ```
+
+#### Option 2 — build on the VM
+
+Same commands as Option 1 but with `--build`. First build is ~30 min
+(installs CUDA wheels + bakes models). Subsequent builds reuse layer
+cache.
 
 For (B) the DNS `A` record for `$DOMAIN` must already point at the VM and
 ports 80 + 443 must be open on the OVH firewall before you bring it up —
 Caddy's ACME challenge needs both.
+
+#### First-boot expectations
+
+- Pulled image (Option 1): container becomes healthy in ~30–60 s; first
+  inference ~5–15 s on a V100S.
+- Built locally without `PRECACHE_MODELS=1`: first boot downloads ~5 GB
+  of weights from HuggingFace into the `paddle-models` named volume —
+  expect 5–10 min before the worker is warm. Subsequent starts reuse the
+  volume and are fast.
 
 ### Verifying
 
