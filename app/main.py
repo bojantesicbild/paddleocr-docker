@@ -82,6 +82,36 @@ def config() -> JSONResponse:
     return JSONResponse({"auth_required": bool(API_KEY)})
 
 
+@app.get("/debug/env", include_in_schema=False)
+def debug_env() -> JSONResponse:
+    """Runtime diagnostics: paddle version, CUDA availability, GPU info, key env vars.
+    Does NOT expose secret values — OCR_API_KEY is shown only as set/unset."""
+    import subprocess, sys
+    info: dict[str, Any] = {}
+    try:
+        import paddle
+        info["paddle_version"] = paddle.__version__
+        info["compiled_with_cuda"] = paddle.is_compiled_with_cuda()
+        info["gpu_device_count"] = paddle.device.cuda.device_count()
+        if paddle.device.cuda.device_count() > 0:
+            info["gpu_name"] = paddle.device.cuda.get_device_name(0)
+    except Exception as e:
+        info["paddle_error"] = str(e)
+    try:
+        smi = subprocess.run(["nvidia-smi", "--query-gpu=name,driver_version,memory.total",
+                              "--format=csv,noheader"], capture_output=True, text=True, timeout=5)
+        info["nvidia_smi"] = smi.stdout.strip() or smi.stderr.strip()
+    except Exception as e:
+        info["nvidia_smi"] = str(e)
+    info["python"] = sys.version
+    info["ocr_api_key_set"] = bool(API_KEY)
+    info["ocr_language"] = os.environ.get("OCR_LANGUAGE", "")
+    info["paddle_pdx_cache_home"] = os.environ.get("PADDLE_PDX_CACHE_HOME", "")
+    info["omp_num_threads"] = os.environ.get("OMP_NUM_THREADS", "")
+    info["home"] = os.environ.get("HOME", "")
+    return JSONResponse(info)
+
+
 @app.get("/health")
 def health() -> JSONResponse:
     try:
