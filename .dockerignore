@@ -5,6 +5,11 @@
 .vscode
 .idea
 
+# Host-specific env files (keep .env.example)
+.env
+.env.*
+!.env.example
+
 # Local Python env (re-installed in container)
 venv
 __pycache__

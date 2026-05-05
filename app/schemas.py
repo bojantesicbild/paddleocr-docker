@@ -15,7 +15,11 @@ class OCRMetadata(BaseModel):
     library: str = "paddleocr"
     model: str = "PaddleOCR-VL-1.5"
     version: str = "3.4.0"
-    language: str
+    language: str = Field(description="Configured OCR model language (env OCR_LANGUAGE)")
+    detected_language: dict[str, Any] | None = Field(
+        default=None,
+        description="Post-OCR language detection: {code, confidence} or null",
+    )
     page_count: int
     duration_ms: int
     settings: dict[str, Any] = Field(default_factory=dict)

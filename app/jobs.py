@@ -15,6 +15,11 @@ from rq import Queue
 
 from . import markdown_format  # cheap; no paddle
 
+# Seed langdetect's internal RNG for reproducible results across calls.
+from langdetect import DetectorFactory, LangDetectException, detect_langs
+
+DetectorFactory.seed = 0
+
 # ocr_service and pdf_split are imported lazily inside the job functions so
 # the API process never loads paddle (only the worker does).
 
@@ -43,6 +48,22 @@ def get_queue() -> Queue:
             default_timeout=JOB_TIMEOUT,
         )
     return _queue
+
+
+def _detect_language(markdown: str) -> dict[str, Any] | None:
+    """Run langdetect on the final markdown. Returns {'code': 'fr',
+    'confidence': 0.97} or None if detection fails (too little text, all
+    symbols, etc.)."""
+    if len(markdown.strip()) < 20:
+        return None
+    try:
+        candidates = detect_langs(markdown)
+    except LangDetectException:
+        return None
+    if not candidates:
+        return None
+    top = candidates[0]
+    return {"code": top.lang, "confidence": round(top.prob, 4)}
 
 
 def _page_to_payload(extract_result: dict[str, Any], page_number: int, region_prefix: str = "") -> dict[str, Any]:
@@ -85,7 +106,8 @@ def run_ocr_image(image_bytes: bytes, settings: dict[str, Any], page_number: int
             "library": "paddleocr",
             "model": "PaddleOCR-VL-1.5",
             "version": "3.4.0",
-            "language": os.environ.get("OCR_LANGUAGE", "fr"),
+            "language": os.environ.get("OCR_LANGUAGE", "ch"),
+            "detected_language": _detect_language(payload["markdown"]),
             "page_count": 1,
             "duration_ms": int((time.monotonic() - t0) * 1000),
             "settings": settings,
@@ -108,14 +130,16 @@ def run_ocr_pdf(pdf_bytes: bytes, settings: dict[str, Any], dpi: int) -> dict[st
         all_markdown.append(payload["markdown"])
         all_images.extend(payload["images"])
 
+    full_markdown = "\n\n".join(all_markdown)
     return {
-        "markdown": "\n\n".join(all_markdown),
+        "markdown": full_markdown,
         "images": all_images,
         "metadata": {
             "library": "paddleocr",
             "model": "PaddleOCR-VL-1.5",
             "version": "3.4.0",
-            "language": os.environ.get("OCR_LANGUAGE", "fr"),
+            "language": os.environ.get("OCR_LANGUAGE", "ch"),
+            "detected_language": _detect_language(full_markdown),
             "page_count": total_pages,
             "duration_ms": int((time.monotonic() - t0) * 1000),
             "settings": settings,

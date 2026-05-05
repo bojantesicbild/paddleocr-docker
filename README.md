@@ -53,12 +53,18 @@ and returns the full `OCRResponse`.
     "model": "PaddleOCR-VL-1.5",
     "version": "3.4.0",
     "language": "ch",
+    "detected_language": { "code": "fr", "confidence": 0.9997 },
     "page_count": 1,
     "duration_ms": 1234,
     "settings": { "include_header": false, ... }
   }
 }
 ```
+
+`language` is the configured recognition model (env `OCR_LANGUAGE`).
+`detected_language` is a post-OCR `langdetect` guess on the final markdown:
+`{code, confidence}` where `code` is a 2-letter ISO 639-1 tag. It is `null`
+when the page has too little text to classify.
 
 For multi-page PDFs, `region_id` values are prefixed with `p{N}_` to stay
 unique across pages.

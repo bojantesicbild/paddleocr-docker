@@ -31,6 +31,22 @@ def _patch_paddle_tensor_int():
 
 _patch_paddle_tensor_int()
 
+
+def _select_device():
+    """Bind paddle to GPU:0 when CUDA is compiled in. paddlex's
+    get_default_device() falls back to 'cpu' unless paddle has been set to
+    a GPU first — without this call the VLM runs on CPU even with
+    paddlepaddle-gpu installed and a GPU visible (~600s/page on Xeon vs
+    ~5–15s on V100S).
+    """
+    import paddle
+
+    if paddle.device.is_compiled_with_cuda() and paddle.device.cuda.device_count() > 0:
+        paddle.device.set_device("gpu:0")
+
+
+_select_device()
+
 from PIL import Image
 
 _pipe = None
