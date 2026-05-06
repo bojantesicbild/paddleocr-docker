@@ -21,6 +21,28 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Pre-flight summary
+        env:
+          API_KEY_RAW: ${{ secrets.OCR_API_KEY }}
+        run: |
+          if [ -n "$API_KEY_RAW" ]; then
+            api_key_status="set (length: ${#API_KEY_RAW})"
+          else
+            api_key_status="not set — image will run without auth"
+          fi
+          {
+            echo "## Build configuration"
+            echo ""
+            echo "| Setting | Value |"
+            echo "|---|---|"
+            echo "| Repo | \`${{ github.repository }}\` |"
+            echo "| Commit | \`${{ github.sha }}\` |"
+            echo "| Trigger | \`${{ github.event_name }}\` |"
+            echo "| OCR_API_KEY secret | $api_key_status |"
+            echo "| PRECACHE_MODELS | \`0\` (CI runners have no NVIDIA driver) |"
+            echo "| Target platform | \`linux/amd64\` |"
+          } >> "$GITHUB_STEP_SUMMARY"
+
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
@@ -51,3 +73,38 @@ jobs:
             ghcr.io/${{ github.repository_owner }}/paddleocr-docker:gpu-${{ github.sha }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+      - name: Inspect pushed image
+        run: |
+          IMG="ghcr.io/${{ github.repository_owner }}/paddleocr-docker:gpu-${{ github.sha }}"
+          echo "Pulling $IMG to verify environment baked in..."
+          docker pull "$IMG" >/dev/null
+
+          # Mask OCR_API_KEY value, only show key/non-empty status.
+          envs=$(docker inspect "$IMG" --format '{{range .Config.Env}}{{println .}}{{end}}' \
+                 | sed -E 's/^(OCR_API_KEY=).+/\1***SET***/; s/^(OCR_API_KEY=)$/\1***UNSET***/' \
+                 | grep -E '^(OCR_|PADDLE_|HOME=|OMP_|PYTHONUNBUFFERED|PADDLE_PDX)' || true)
+          size_bytes=$(docker inspect "$IMG" --format '{{.Size}}')
+          size_mib=$((size_bytes / 1048576))
+          arch=$(docker inspect "$IMG" --format '{{.Architecture}}')
+          os=$(docker inspect "$IMG" --format '{{.Os}}')
+          digest=$(docker inspect "$IMG" --format '{{index .RepoDigests 0}}' || echo "")
+
+          {
+            echo ""
+            echo "## Pushed image"
+            echo ""
+            echo "**Tags:**"
+            echo "- \`ghcr.io/${{ github.repository_owner }}/paddleocr-docker:gpu-latest\`"
+            echo "- \`ghcr.io/${{ github.repository_owner }}/paddleocr-docker:gpu-${{ github.sha }}\`"
+            echo ""
+            echo "**Digest:** \`$digest\`"
+            echo ""
+            echo "**Size:** ${size_mib} MiB ($size_bytes bytes) · **Platform:** ${os}/${arch}"
+            echo ""
+            echo "### Baked environment (\`OCR_API_KEY\` value masked)"
+            echo ""
+            echo '```'
+            echo "$envs"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
