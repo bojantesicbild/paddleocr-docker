@@ -40,7 +40,12 @@ jobs:
           platforms: linux/amd64
           build-args: |
             OCR_API_KEY=${{ secrets.OCR_API_KEY }}
-            PRECACHE_MODELS=1
+            # CI runners have no NVIDIA driver, so importing paddlepaddle-gpu
+            # to bake models fails. The first container boot on the GPU host
+            # downloads models into the paddle-models volume and they stay
+            # cached from then on. Build with PRECACHE_MODELS=1 directly on a
+            # GPU host if you want a pre-baked image.
+            PRECACHE_MODELS=0
           tags: |
             ghcr.io/${{ github.repository_owner }}/paddleocr-docker:gpu-latest
             ghcr.io/${{ github.repository_owner }}/paddleocr-docker:gpu-${{ github.sha }}

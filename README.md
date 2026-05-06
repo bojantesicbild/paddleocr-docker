@@ -149,8 +149,12 @@ building on the OVH VM (skips ~30 min of wheel + model bake):
 
 #### Option 1 — pull from GHCR (recommended)
 
-CI builds `linux/amd64` GPU images on every push to `main` with
-`PRECACHE_MODELS=1` so the image already contains the ~5 GB of weights.
+CI builds `linux/amd64` GPU images on every push to `main`. CI runners
+have no NVIDIA driver, so the image is built with `PRECACHE_MODELS=0`
+— the worker downloads ~5 GB of weights into the `paddle-models` named
+volume on first boot (5–10 min). Every subsequent start reuses the
+volume. If you want a fully pre-baked image, build on the GPU host
+(Option 2).
 
 ```bash
 git clone <this repo>
