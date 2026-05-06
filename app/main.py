@@ -82,6 +82,51 @@ def config() -> JSONResponse:
     return JSONResponse({"auth_required": bool(API_KEY)})
 
 
+@app.get("/debug/gpu", include_in_schema=False, dependencies=[Depends(require_api_key)])
+def debug_gpu() -> JSONResponse:
+    """Live GPU utilization snapshot via nvidia-smi (one row per visible GPU).
+
+    Cheap (~50 ms per call). Returns {"available": false, "reason": "..."}
+    on CPU-only hosts or when nvidia-smi is missing.
+    """
+    import subprocess
+
+    fields = "index,name,driver_version,utilization.gpu,memory.used,memory.total,temperature.gpu,power.draw"
+    try:
+        out = subprocess.run(
+            ["nvidia-smi", f"--query-gpu={fields}", "--format=csv,noheader,nounits"],
+            capture_output=True, text=True, timeout=5,
+        )
+    except FileNotFoundError:
+        return JSONResponse({"available": False, "reason": "nvidia-smi not in PATH"})
+    if out.returncode != 0:
+        return JSONResponse({
+            "available": False,
+            "reason": (out.stderr.strip() or f"exit={out.returncode}"),
+        })
+
+    def _num(s: str, cast):
+        s = s.strip()
+        return None if s in ("", "N/A", "[N/A]") else cast(s)
+
+    gpus: list[dict[str, Any]] = []
+    for line in out.stdout.strip().splitlines():
+        parts = [p.strip() for p in line.split(",")]
+        if len(parts) < 8:
+            continue
+        gpus.append({
+            "index": _num(parts[0], int),
+            "name": parts[1],
+            "driver_version": parts[2],
+            "utilization_pct": _num(parts[3], float),
+            "memory_used_mib": _num(parts[4], int),
+            "memory_total_mib": _num(parts[5], int),
+            "temperature_c": _num(parts[6], int),
+            "power_w": _num(parts[7], float),
+        })
+    return JSONResponse({"available": True, "gpus": gpus})
+
+
 @app.get("/debug/env", include_in_schema=False)
 def debug_env() -> JSONResponse:
     """Runtime diagnostics: paddle version, CUDA availability, GPU info, key env vars.

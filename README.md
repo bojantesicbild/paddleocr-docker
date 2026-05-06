@@ -26,7 +26,9 @@ Ships as a single container running supervisord → redis + FastAPI + RQ worker.
 | GET    | `/config`         | —                                                                 | `{"auth_required": true\|false}` |
 | POST   | `/ocr/image`      | multipart: `file`, `page_number` (default 1), `settings` (JSON)   | `OCRResponse` (sync) or `{"job_id": ...}` (with `?async=1`) |
 | POST   | `/ocr/pdf`        | multipart: `file`, `dpi` (default 200), `settings` (JSON)         | `OCRResponse` (sync) or `{"job_id": ...}` (with `?async=1`) |
-| GET    | `/jobs/{job_id}`  | —                                                                 | `{"status": "queued\|started\|finished\|failed", "result": ..., "error": ...}` |
+| GET    | `/jobs/{job_id}`  | _(auth-gated)_                                                    | `{"status": "queued\|started\|finished\|failed", "result": ..., "error": ...}` |
+| GET    | `/debug/env`      | —                                                                 | Static deploy info: paddle/CUDA wiring, GPU model, env vars (no secrets) |
+| GET    | `/debug/gpu`      | _(auth-gated)_                                                    | Live `nvidia-smi` snapshot: utilization, memory, temp, power per GPU |
 | GET    | `/docs`           | —                                                                 | Swagger UI |
 
 `POST /ocr/*` endpoints always enqueue the job on the internal Redis. With
@@ -204,7 +206,13 @@ OCR_API_KEY=$OCR_API_KEY HOST=https://$DOMAIN ./extract.sh sample.jpg
 
 ### Operations
 
-- **Logs**: `docker compose logs -f paddle-ocr`
+- **Process logs (host)**: `docker compose logs -f paddle-ocr` — full
+  supervisord/uvicorn/redis/worker output. There is no `/logs` API
+  endpoint by design: supervisord forwards subprocess stdout to the
+  Docker daemon, so the host's `docker logs` is the source of truth.
+- **GPU monitoring (API)**: `GET /debug/gpu` — JSON `nvidia-smi` snapshot
+  per call. Pair it with your monitoring stack to alert on memory or
+  temperature thresholds without granting shell access.
 - **Restart**: `docker compose restart paddle-ocr`
 - **Update**: `git pull && docker compose up -d --build` (models stay cached in the volume)
 - **Nuke and re-download models**: `docker volume rm paddle-ocr-docker_paddle-models`
