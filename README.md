@@ -27,7 +27,8 @@ Ships as a single container running supervisord → redis + FastAPI + RQ worker.
 | POST   | `/ocr/image`      | multipart: `file`, `page_number` (default 1), `settings` (JSON)   | `OCRResponse` (sync) or `{"job_id": ...}` (with `?async=1`) |
 | POST   | `/ocr/pdf`        | multipart: `file`, `dpi` (default 200), `settings` (JSON)         | `OCRResponse` (sync) or `{"job_id": ...}` (with `?async=1`) |
 | GET    | `/jobs/{job_id}`  | _(auth-gated)_                                                    | `{"status": "queued\|started\|finished\|failed", "result": ..., "error": ...}` |
-| GET    | `/debug/env`      | —                                                                 | Static deploy info: paddle/CUDA wiring, GPU model, env vars (no secrets) |
+| GET    | `/debug/env`      | —                                                                 | API-process paddle/CUDA wiring + env vars (no secrets). Note: API is a separate process from the worker. |
+| GET    | `/debug/worker`   | _(auth-gated)_                                                    | **Worker** process's paddle state — `current_device`, GPU memory. This is where inference runs; check this to confirm GPU binding. |
 | GET    | `/debug/gpu`      | _(auth-gated)_                                                    | Live `nvidia-smi` snapshot: utilization, memory, temp, power per GPU |
 | GET    | `/docs`           | —                                                                 | Swagger UI |
 

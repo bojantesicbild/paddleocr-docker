@@ -82,6 +82,25 @@ def config() -> JSONResponse:
     return JSONResponse({"auth_required": bool(API_KEY)})
 
 
+@app.get("/debug/worker", include_in_schema=False, dependencies=[Depends(require_api_key)])
+def debug_worker() -> JSONResponse:
+    """The worker's view of paddle (separate process from the API).
+
+    Inference runs in the worker — this is the source of truth for whether
+    paddle is bound to GPU. The API process imports paddle independently
+    and doesn't load the pipeline, so /debug/env reports its own (cpu)
+    state which is misleading. The worker publishes this snapshot to
+    Redis after pipeline warmup.
+    """
+    raw = ocr_jobs.get_redis().get("worker:diagnostics")
+    if not raw:
+        return JSONResponse({
+            "available": False,
+            "reason": "worker hasn't published diagnostics yet — still warming?",
+        })
+    return JSONResponse({"available": True, "worker": json.loads(raw)})
+
+
 @app.get("/debug/gpu", include_in_schema=False, dependencies=[Depends(require_api_key)])
 def debug_gpu() -> JSONResponse:
     """Live GPU utilization snapshot via nvidia-smi (one row per visible GPU).
