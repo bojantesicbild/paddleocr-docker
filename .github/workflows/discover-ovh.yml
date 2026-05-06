@@ -1,0 +1,81 @@
+name: Discover OVH project + app IDs
+
+# One-time helper: prints every Public Cloud project the API token can see
+# and the AI Deploy apps inside each. Copy the printed IDs into the
+# OVH_PROJECT_ID and OVH_APP_ID repo secrets, then this workflow's purpose
+# is done — the redeploy workflow takes over.
+
+on:
+  workflow_dispatch: {}
+
+jobs:
+  discover:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Install python-ovh
+        run: pip install --quiet 'ovh<2'
+
+      - name: List projects + AI Deploy apps
+        env:
+          OVH_APPLICATION_KEY: ${{ secrets.OVH_APPLICATION_KEY }}
+          OVH_APPLICATION_SECRET: ${{ secrets.OVH_APPLICATION_SECRET }}
+          OVH_CONSUMER_KEY: ${{ secrets.OVH_CONSUMER_KEY }}
+        run: |
+          python <<'PY'
+          import os, json, ovh
+
+          client = ovh.Client(
+              endpoint='ovh-eu',
+              application_key=os.environ['OVH_APPLICATION_KEY'],
+              application_secret=os.environ['OVH_APPLICATION_SECRET'],
+              consumer_key=os.environ['OVH_CONSUMER_KEY'],
+          )
+
+          summary_lines = ["## OVH discovery", ""]
+          try:
+              projects = client.get('/cloud/project')
+          except Exception as e:
+              summary_lines.append(f"❌ `GET /cloud/project` failed — token rights missing? `{e}`")
+              projects = []
+          summary_lines.append(f"Found **{len(projects)}** project(s).")
+          summary_lines.append("")
+
+          for pid in projects:
+              try:
+                  pinfo = client.get(f'/cloud/project/{pid}')
+              except Exception as e:
+                  pinfo = {"description": f"(error: {e})"}
+              summary_lines.append(f"### Project `{pid}`")
+              summary_lines.append(f"- Description: {pinfo.get('description', '?')}")
+              summary_lines.append(f"- `OVH_PROJECT_ID` = `{pid}`")
+              try:
+                  apps = client.get(f'/cloud/project/{pid}/ai/app')
+              except Exception as e:
+                  summary_lines.append(f"- (no AI app access: `{e}`)")
+                  continue
+              if not apps:
+                  summary_lines.append("- (no AI Deploy apps)")
+                  continue
+              summary_lines.append("")
+              summary_lines.append("| App ID | Name | State | Image |")
+              summary_lines.append("|---|---|---|---|")
+              for app_id in apps:
+                  try:
+                      app = client.get(f'/cloud/project/{pid}/ai/app/{app_id}')
+                  except Exception as e:
+                      summary_lines.append(f"| `{app_id}` | (error: {e}) | | |")
+                      continue
+                  spec = app.get('spec', {}) or {}
+                  status = app.get('status', {}) or {}
+                  summary_lines.append(
+                      f"| `{app_id}` | {spec.get('name', '?')} | "
+                      f"{status.get('state', '?')} | `{spec.get('image', '?')}` |"
+                  )
+
+          summary_lines.append("")
+          summary_lines.append("Add `OVH_PROJECT_ID` and `OVH_APP_ID` (the ID of the row matching your service) as repo secrets.")
+          summary_lines.append("Then trigger **Redeploy OVH AI app** to test.")
+
+          with open(os.environ['GITHUB_STEP_SUMMARY'], 'w') as f:
+              f.write("\n".join(summary_lines))
+          PY

@@ -1,0 +1,104 @@
+name: Redeploy OVH AI app
+
+# Triggers a stop → start of the OVH AI Deploy app so it re-pulls
+# ghcr.io/.../paddleocr-docker:gpu-latest from GHCR. OVH does not auto-pull
+# on tag updates; this workflow closes that loop.
+#
+# Required repo secrets:
+#   OVH_APPLICATION_KEY
+#   OVH_APPLICATION_SECRET
+#   OVH_CONSUMER_KEY
+#   OVH_PROJECT_ID  (Public Cloud service name)
+#   OVH_APP_ID      (UUID of the AI Deploy app)
+
+on:
+  # Auto-redeploy after a successful image build.
+  workflow_run:
+    workflows: ["Build and push GPU image"]
+    types: [completed]
+  # Manual button.
+  workflow_dispatch: {}
+
+jobs:
+  redeploy:
+    runs-on: ubuntu-latest
+    # Skip auto-redeploy if the upstream image build didn't succeed.
+    if: >
+      github.event_name == 'workflow_dispatch'
+      || github.event.workflow_run.conclusion == 'success'
+    steps:
+      - name: Install python-ovh
+        run: pip install --quiet 'ovh<2'
+
+      - name: Stop, wait, start, wait for healthy
+        env:
+          OVH_APPLICATION_KEY: ${{ secrets.OVH_APPLICATION_KEY }}
+          OVH_APPLICATION_SECRET: ${{ secrets.OVH_APPLICATION_SECRET }}
+          OVH_CONSUMER_KEY: ${{ secrets.OVH_CONSUMER_KEY }}
+          PROJECT: ${{ secrets.OVH_PROJECT_ID }}
+          APP: ${{ secrets.OVH_APP_ID }}
+        run: |
+          python <<'PY'
+          import os, sys, time, ovh
+
+          client = ovh.Client(
+              endpoint='ovh-eu',
+              application_key=os.environ['OVH_APPLICATION_KEY'],
+              application_secret=os.environ['OVH_APPLICATION_SECRET'],
+              consumer_key=os.environ['OVH_CONSUMER_KEY'],
+          )
+          PROJECT = os.environ['PROJECT']
+          APP     = os.environ['APP']
+
+          summary = []
+
+          def get_app():
+              return client.get(f'/cloud/project/{PROJECT}/ai/app/{APP}')
+
+          def state(info):
+              return (info.get('status') or {}).get('state', 'UNKNOWN')
+
+          def wait_for(target_states, label, timeout_s):
+              deadline = time.time() + timeout_s
+              last = None
+              while time.time() < deadline:
+                  info = get_app()
+                  s = state(info)
+                  if s != last:
+                      print(f'  state={s}')
+                      last = s
+                  if s in target_states:
+                      return info
+                  if s in ('FAILED', 'ERROR', 'CRASHED'):
+                      sys.exit(f'app entered {s} during {label}')
+                  time.sleep(10)
+              sys.exit(f'timed out after {timeout_s}s waiting for {label} '
+                       f'(last state={last})')
+
+          info = get_app()
+          spec = info.get('spec') or {}
+          start_state = state(info)
+          print(f'starting state: {start_state}')
+          print(f'image: {spec.get("image", "?")}')
+          summary.append(f"### Redeploy of `{APP}`")
+          summary.append(f"- Starting state: `{start_state}`")
+          summary.append(f"- Image: `{spec.get('image', '?')}`")
+
+          if start_state in ('RUNNING', 'STARTING', 'PENDING', 'SCALING'):
+              print('stop...')
+              client.post(f'/cloud/project/{PROJECT}/ai/app/{APP}/stop')
+              wait_for({'STOPPED'}, 'stop', timeout_s=300)
+              summary.append("- ✅ Stopped")
+          else:
+              print(f'already not running ({start_state}); skipping stop')
+              summary.append(f"- (already not running, skipped stop)")
+
+          print('start...')
+          client.post(f'/cloud/project/{PROJECT}/ai/app/{APP}/start')
+          info = wait_for({'RUNNING'}, 'start', timeout_s=900)
+          url = (info.get('status') or {}).get('url', '?')
+          summary.append(f"- ✅ Running at `{url}`")
+
+          with open(os.environ['GITHUB_STEP_SUMMARY'], 'w') as f:
+              f.write("\n".join(summary))
+          PY
