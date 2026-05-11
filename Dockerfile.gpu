@@ -44,7 +44,7 @@ ENV PIP_DISABLE_PIP_VERSION_CHECK=1 \
     HOME=/tmp \
     OCR_LANGUAGE=ch \
     OMP_NUM_THREADS=4 \
-    OCR_ENABLE_HPI=1 \
+    OCR_ENABLE_HPI=0 \
     DEBIAN_FRONTEND=noninteractive
 
 # Optional API key baked at build time (passed via --build-arg from a CI secret).
