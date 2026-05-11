@@ -76,13 +76,13 @@ async def _wait_for_job(job: Job, timeout_s: int = 1800) -> dict[str, Any]:
     raise HTTPException(status_code=504, detail=f"job {job.id} timed out after {timeout_s}s")
 
 
-@app.get("/config", include_in_schema=False)
+@app.get("/config", tags=["diagnostics"])
 def config() -> JSONResponse:
     """Tells the UI whether it needs to send an X-API-Key header."""
     return JSONResponse({"auth_required": bool(API_KEY)})
 
 
-@app.get("/debug/worker", include_in_schema=False, dependencies=[Depends(require_api_key)])
+@app.get("/debug/worker", tags=["diagnostics"], dependencies=[Depends(require_api_key)])
 def debug_worker() -> JSONResponse:
     """The worker's view of paddle (separate process from the API).
 
@@ -101,7 +101,7 @@ def debug_worker() -> JSONResponse:
     return JSONResponse({"available": True, "worker": json.loads(raw)})
 
 
-@app.get("/debug/gpu", include_in_schema=False, dependencies=[Depends(require_api_key)])
+@app.get("/debug/gpu", tags=["diagnostics"], dependencies=[Depends(require_api_key)])
 def debug_gpu() -> JSONResponse:
     """Live GPU utilization snapshot via nvidia-smi (one row per visible GPU).
 
@@ -146,7 +146,7 @@ def debug_gpu() -> JSONResponse:
     return JSONResponse({"available": True, "gpus": gpus})
 
 
-@app.get("/debug/env", include_in_schema=False)
+@app.get("/debug/env", tags=["diagnostics"])
 def debug_env() -> JSONResponse:
     """Runtime diagnostics: paddle version, CUDA availability, GPU info, key env vars.
     Does NOT expose secret values — OCR_API_KEY is shown only as set/unset."""
