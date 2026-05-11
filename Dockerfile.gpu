@@ -36,6 +36,7 @@ FROM nvidia/cuda:12.6.3-cudnn-runtime-ubuntu24.04 AS runtime
 ENV PIP_DISABLE_PIP_VERSION_CHECK=1 \
     PIP_NO_CACHE_DIR=1 \
     PIP_BREAK_SYSTEM_PACKAGES=1 \
+    PIP_ROOT_USER_ACTION=ignore \
     PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
     PADDLE_PDX_DISABLE_MODEL_SOURCE_CHECK=True \
@@ -43,6 +44,7 @@ ENV PIP_DISABLE_PIP_VERSION_CHECK=1 \
     HOME=/tmp \
     OCR_LANGUAGE=ch \
     OMP_NUM_THREADS=4 \
+    OCR_ENABLE_HPI=1 \
     DEBIAN_FRONTEND=noninteractive
 
 # Optional API key baked at build time (passed via --build-arg from a CI secret).
@@ -70,15 +72,25 @@ WORKDIR /srv
 
 COPY --from=builder /wheels /wheels
 COPY requirements.txt .
-# Install, then strip caches / bytecode / package test dirs — saves ~1-2 GB
-# in the final image with no behavioral impact.
+# Install, then strip bytecode / package test dirs — saves ~1-2 GB in the
+# final image with no behavioral impact. (No `pip cache purge` because
+# PIP_NO_CACHE_DIR=1 already disables the cache.)
 RUN pip install --no-index --find-links=/wheels paddlepaddle-gpu==3.3.0 -r requirements.txt \
     && rm -rf /wheels \
-    && pip cache purge \
     && find /usr/local/lib /usr/lib/python3.12 -type d -name '__pycache__' -prune -exec rm -rf {} + 2>/dev/null || true \
     && find /usr/local/lib /usr/lib/python3.12 -type d -name 'tests' -path '*/site-packages/*' -prune -exec rm -rf {} + 2>/dev/null || true \
     && find /usr/local/lib /usr/lib/python3.12 -type f -name '*.pyc' -delete 2>/dev/null || true \
     && rm -rf /root/.cache /tmp/pip-*
+
+# Install High-Performance Inference deps (TensorRT, ONNX Runtime, OpenVINO).
+# These let paddleocr auto-select a faster runtime + FP16 on V100-class GPUs.
+# Build with --build-arg ENABLE_HPI=0 to skip and save ~500 MB if HPI isn't
+# helping for your model.
+ARG ENABLE_HPI=1
+RUN if [ "$ENABLE_HPI" = "1" ]; then \
+      paddleocr install_hpi_deps gpu \
+        || echo "WARN: install_hpi_deps gpu failed; HPI will fall back to native paddle"; \
+    fi
 
 COPY ocr_settings.json supervisord.conf ./
 COPY app ./app

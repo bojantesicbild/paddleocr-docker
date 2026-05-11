@@ -95,6 +95,13 @@ def get_pipeline():
                     # scalars"). Disable — we're single-request-at-a-time anyway.
                     "use_queues": False,
                 }
+                # High-Performance Inference: lets paddle auto-select among
+                # Paddle Inference, ONNX Runtime, OpenVINO, TensorRT, with
+                # FP16 mixed precision where available. Real benefit on V100
+                # is mainly the layout/preprocessor models; the VLM step may
+                # still fall back to native paddle.
+                if os.environ.get("OCR_ENABLE_HPI", "0").strip() == "1":
+                    kwargs["enable_hpi"] = True
                 # Remote VL inference: set VL_REMOTE_URL to offload the
                 # autoregressive generation step to a vLLM/sglang/fastdeploy
                 # server (typically on a CC≥8.0 GPU elsewhere). The layout

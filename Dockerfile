@@ -24,6 +24,7 @@ FROM python:3.12-slim AS runtime
 
 ENV PIP_DISABLE_PIP_VERSION_CHECK=1 \
     PIP_NO_CACHE_DIR=1 \
+    PIP_ROOT_USER_ACTION=ignore \
     PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
     PADDLE_PDX_DISABLE_MODEL_SOURCE_CHECK=True \
@@ -50,11 +51,11 @@ WORKDIR /srv
 
 COPY --from=builder /wheels /wheels
 COPY requirements.txt .
-# Install, then strip caches / bytecode / package test dirs (~500 MB savings
-# on CPU image, no behavioral impact).
+# Install, then strip bytecode / package test dirs (~500 MB savings on CPU
+# image, no behavioral impact). PIP_NO_CACHE_DIR=1 already disables the
+# pip cache so no `pip cache purge` needed.
 RUN pip install --no-index --find-links=/wheels paddlepaddle==3.3.0 -r requirements.txt \
     && rm -rf /wheels \
-    && pip cache purge \
     && find /usr/local/lib -type d -name '__pycache__' -prune -exec rm -rf {} + 2>/dev/null || true \
     && find /usr/local/lib -type d -name 'tests' -path '*/site-packages/*' -prune -exec rm -rf {} + 2>/dev/null || true \
     && find /usr/local/lib -type f -name '*.pyc' -delete 2>/dev/null || true \
