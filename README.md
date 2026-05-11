@@ -83,6 +83,9 @@ overlays read variables from there.
 | `OCR_JOB_TIMEOUT`   | `1800`   | Per-job timeout in the RQ worker (seconds). |
 | `OCR_RESULT_TTL`    | `86400`  | How long finished job results stay in Redis (seconds). |
 | `OCR_API_KEY`       | _(unset)_| If set, `/ocr/*` and `/jobs/*` require `X-API-Key: <value>`. |
+| `VL_REMOTE_URL`     | _(unset)_| If set, the VLM step is offloaded to a remote vllm/sglang/fastdeploy server. Lets you run the API on a slow GPU (e.g. V100) and route generation to a fast one. |
+| `VL_REMOTE_BACKEND` | `vllm-server` | Used only when `VL_REMOTE_URL` is set. One of `vllm-server`, `sglang-server`, `fastdeploy-server`, `mlx-vlm-server`. |
+| `VL_REMOTE_API_KEY` | _(unset)_| Auth header for the remote VL server, if it requires one. |
 | `HOST_PORT`         | `8090`   | Host port mapped to the container's 8080. |
 | `DOMAIN`            | _(unset)_| TLS overlay only: public hostname for Caddy. |
 | `CADDY_EMAIL`       | _(unset)_| TLS overlay only: Let's Encrypt contact email. |
@@ -90,6 +93,21 @@ overlays read variables from there.
 `ocr_settings.json` holds the defaults sent to `PaddleOCRVL.predict()` — per
 request these are overridable via the `settings` JSON form field (the UI's
 checkboxes build this for you).
+
+### Speed knobs (per-request, V100 users especially)
+
+V100/V100S can't run vLLM/FlashAttention 2 (CC < 8.0) and inference is
+~100 s/page. To trade some quality for speed:
+
+| Setting | Effect | Notes |
+|---|---|---|
+| `max_pixels` (in JSON `settings`) | Caps the VLM's input image size. 1280×960 ≈ 1228800 ≈ half of default → roughly half the tokens → roughly half the time. | Small text may be missed. |
+| `max_new_tokens` (in JSON `settings`) | Caps generation length per block. Default ~1024. | Set lower to bound worst-case latency; risk truncating long blocks. |
+| `dpi` (form field, PDFs only) | Lowers the rasterized page size before layout/VL. Default 200. | 150 gives noticeable speedup with mild quality loss. |
+| Include-block toggles | Each enabled label is an extra VLM call. | Default OFF for header/footer/page-number is intentional. |
+
+The HTML UI exposes `max_pixels`, `max_new_tokens`, and `dpi` directly so you
+can A/B them.
 
 ## Build & run (Docker)
 

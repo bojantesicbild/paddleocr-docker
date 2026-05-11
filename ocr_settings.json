@@ -11,5 +11,8 @@
   "include_footer_image": false,
   "include_page_number": false,
   "include_footnote": false,
-  "include_aside_text": false
+  "include_aside_text": false,
+
+  "max_pixels": null,
+  "max_new_tokens": null
 }

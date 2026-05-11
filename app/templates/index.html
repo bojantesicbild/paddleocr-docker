@@ -121,6 +121,14 @@
         <label>dpi (PDF only)</label>
         <input type="number" id="dpi" value="200" min="72" max="600">
       </div>
+      <div>
+        <label>max_pixels (speed knob — empty = default)</label>
+        <input type="number" id="max_pixels" placeholder="e.g. 1228800 (1280×960)" min="0">
+      </div>
+      <div>
+        <label>max_new_tokens (per-block cap)</label>
+        <input type="number" id="max_new_tokens" placeholder="e.g. 1024" min="0">
+      </div>
     </div>
 
     <div class="opts-group">
@@ -232,6 +240,10 @@ function buildSettings() {
   for (const key of ['header','header_image','footer','footer_image','page_number','footnote','aside_text']) {
     if ($(`#inc_${key}`).checked) s[`include_${key}`] = true;
   }
+  const mp = parseInt($('#max_pixels').value, 10);
+  if (mp > 0) s.max_pixels = mp;
+  const mnt = parseInt($('#max_new_tokens').value, 10);
+  if (mnt > 0) s.max_new_tokens = mnt;
   return Object.keys(s).length ? JSON.stringify(s) : null;
 }
 

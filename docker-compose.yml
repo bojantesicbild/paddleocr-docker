@@ -14,6 +14,11 @@ services:
       OCR_RESULT_TTL: "${OCR_RESULT_TTL:-86400}"
       # When set, API requires X-API-Key header on /ocr/* and /jobs/*.
       OCR_API_KEY: "${OCR_API_KEY:-}"
+      # Optional: offload VL generation to a remote vllm-/sglang-/fastdeploy-
+      # server (typically on a CC≥8.0 GPU). Leave unset for local inference.
+      VL_REMOTE_URL: "${VL_REMOTE_URL:-}"
+      VL_REMOTE_BACKEND: "${VL_REMOTE_BACKEND:-vllm-server}"
+      VL_REMOTE_API_KEY: "${VL_REMOTE_API_KEY:-}"
     restart: unless-stopped
     volumes:
       # Persist downloaded model weights so rebuilds don't re-download ~4 GB.

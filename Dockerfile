@@ -50,8 +50,15 @@ WORKDIR /srv
 
 COPY --from=builder /wheels /wheels
 COPY requirements.txt .
+# Install, then strip caches / bytecode / package test dirs (~500 MB savings
+# on CPU image, no behavioral impact).
 RUN pip install --no-index --find-links=/wheels paddlepaddle==3.3.0 -r requirements.txt \
-    && rm -rf /wheels
+    && rm -rf /wheels \
+    && pip cache purge \
+    && find /usr/local/lib -type d -name '__pycache__' -prune -exec rm -rf {} + 2>/dev/null || true \
+    && find /usr/local/lib -type d -name 'tests' -path '*/site-packages/*' -prune -exec rm -rf {} + 2>/dev/null || true \
+    && find /usr/local/lib -type f -name '*.pyc' -delete 2>/dev/null || true \
+    && rm -rf /root/.cache /tmp/pip-*
 
 COPY ocr_settings.json supervisord.conf ./
 COPY app ./app

@@ -97,6 +97,16 @@ def main() -> int:
         print(f"  image     : {spec.get('image', '?')}")
         print(f"  url       : {status.get('url', '?')}")
 
+    # Show the current token's actual rules — answers "did the regenerated
+    # token really get PUT /start and /stop?" without needing to try them.
+    try:
+        cred = client.get("/auth/currentCredential")
+        print(f"\nToken rules (id={cred.get('credentialId')}):")
+        for rule in cred.get("rules", []):
+            print(f"  {rule.get('method', '?'):6s} {rule.get('path', '?')}")
+    except Exception as e:
+        print(f"\n(can't list rules: {type(e).__name__}: {e})")
+
     if not all_pass:
         print("\nReads failed → token rights are wrong (or wrong project/app ID).")
         return 1

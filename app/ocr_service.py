@@ -84,17 +84,29 @@ def get_pipeline():
                 from paddleocr import PaddleOCRVL
 
                 s = _load_startup_settings()
-                _pipe = PaddleOCRVL(
-                    pipeline_version="v1.5",
-                    use_doc_orientation_classify=s.get("use_doc_orientation_classify", False),
-                    use_doc_unwarping=s.get("use_doc_unwarping", False),
-                    use_chart_recognition=s.get("chart_recognition", False),
-                    use_seal_recognition=s.get("use_seal_recognition", False),
+                kwargs: dict[str, Any] = {
+                    "pipeline_version": "v1.5",
+                    "use_doc_orientation_classify": s.get("use_doc_orientation_classify", False),
+                    "use_doc_unwarping": s.get("use_doc_unwarping", False),
+                    "use_chart_recognition": s.get("chart_recognition", False),
+                    "use_seal_recognition": s.get("use_seal_recognition", False),
                     # The multi-process VLM worker pool crashes on CPU paddle
-                    # ("only 0-dimensional arrays can be converted to Python scalars").
-                    # Disable — we're single-request-at-a-time anyway.
-                    use_queues=False,
-                )
+                    # ("only 0-dimensional arrays can be converted to Python
+                    # scalars"). Disable — we're single-request-at-a-time anyway.
+                    "use_queues": False,
+                }
+                # Remote VL inference: set VL_REMOTE_URL to offload the
+                # autoregressive generation step to a vLLM/sglang/fastdeploy
+                # server (typically on a CC≥8.0 GPU elsewhere). The layout
+                # detector still runs locally on this container's GPU.
+                remote_url = os.environ.get("VL_REMOTE_URL", "").strip()
+                if remote_url:
+                    kwargs["vl_rec_backend"] = os.environ.get("VL_REMOTE_BACKEND", "vllm-server")
+                    kwargs["vl_rec_server_url"] = remote_url
+                    api_key = os.environ.get("VL_REMOTE_API_KEY", "").strip()
+                    if api_key:
+                        kwargs["vl_rec_api_key"] = api_key
+                _pipe = PaddleOCRVL(**kwargs)
     return _pipe
 
 
@@ -132,6 +144,11 @@ def extract(image_bytes: bytes, settings: dict[str, Any] | None = None) -> dict[
         "use_seal_recognition": settings.get("use_seal_recognition"),
         "use_ocr_for_image_block": settings.get("use_ocr_for_image_block"),
         "layout_threshold": settings.get("layout_threshold"),
+        # Speed/quality knobs. Lower max_pixels = fewer VLM input tokens =
+        # faster inference, but small text may be missed. max_new_tokens
+        # caps generation length per block.
+        "max_pixels": settings.get("max_pixels"),
+        "max_new_tokens": settings.get("max_new_tokens"),
         "use_queues": False,
     }
     predict_kwargs = {k: v for k, v in predict_kwargs.items() if v is not None}
