@@ -65,9 +65,13 @@ def _build_converter(settings: dict[str, Any] | None = None):
     """
     from docling.datamodel.accelerator_options import AcceleratorDevice, AcceleratorOptions
     from docling.datamodel.base_models import InputFormat
-    from docling.datamodel.pipeline_options import EasyOcrOptions, ThreadedPdfPipelineOptions
+    from docling.datamodel.pipeline_options import (
+        EasyOcrOptions,
+        PdfPipelineOptions,
+        PictureDescriptionVlmOptions,
+        ThreadedPdfPipelineOptions,
+    )
     from docling.document_converter import DocumentConverter, PdfFormatOption
-    from docling.pipeline.threaded_standard_pdf_pipeline import ThreadedStandardPdfPipeline
 
     s = dict(_load_startup_settings())
     if settings:
@@ -88,28 +92,52 @@ def _build_converter(settings: dict[str, Any] | None = None):
     acc = AcceleratorOptions(
         device=device_map.get(device_env, AcceleratorDevice.AUTO),
         num_threads=int(os.environ.get("DOCLING_THREADS", "4")),
+        # CC 7.0 (V100) has no FA2 support — keep explicit so docling never
+        # tries to enable it on Ampere-and-up hosts when we share the image.
+        cuda_use_flash_attention2=False,
     )
 
-    opts = ThreadedPdfPipelineOptions(
-        accelerator_options=acc,
-        # Layout is the most expensive stage after VLM/OCR; batching it
-        # across pages is the biggest GPU-utilization win. Default 4; on
-        # V100S/A100 with ≥20 GB VRAM, 64 is safe.
-        layout_batch_size=int(os.environ.get("DOCLING_LAYOUT_BATCH", "64")),
-        ocr_batch_size=int(os.environ.get("DOCLING_OCR_BATCH", "8")),
-        table_batch_size=int(os.environ.get("DOCLING_TABLE_BATCH", "4")),
-        # Bound worst-case per-document latency. Returns PARTIAL_SUCCESS
-        # instead of hanging.
-        document_timeout=float(os.environ.get("DOCLING_DOC_TIMEOUT", "120")),
-    )
+    use_threaded = os.environ.get("DOCLING_PIPELINE", "").strip().lower() == "threaded"
+    doc_timeout = float(os.environ.get("DOCLING_DOC_TIMEOUT", "300"))
+
+    if use_threaded:
+        from docling.pipeline.threaded_standard_pdf_pipeline import ThreadedStandardPdfPipeline
+        opts = ThreadedPdfPipelineOptions(
+            accelerator_options=acc,
+            layout_batch_size=int(os.environ.get("DOCLING_LAYOUT_BATCH", "4")),
+            ocr_batch_size=int(os.environ.get("DOCLING_OCR_BATCH", "8")),
+            table_batch_size=int(os.environ.get("DOCLING_TABLE_BATCH", "4")),
+            document_timeout=doc_timeout,
+        )
+        pipeline_cls = ThreadedStandardPdfPipeline
+    else:
+        # Default = StandardPdfPipeline. The threaded variant has shown
+        # CUDA failures on Tesla V100S; opt in only when verified.
+        opts = PdfPipelineOptions(accelerator_options=acc, document_timeout=doc_timeout)
+        pipeline_cls = None
+
     opts.do_ocr = bool(s.get("do_ocr", True))
     opts.do_table_structure = bool(s.get("do_table_structure", True))
     # Picture-level enrichment is what gives us BAR_CHART / LINE_CHART /
     # LOGO / SIGNATURE / etc. on top of the coarse DocItemLabel.
     opts.do_picture_classification = bool(s.get("do_picture_classification", True))
     # Optional VLM caption of each picture; expensive — off by default.
+    # Configurable repo_id: defaults to SmolVLM-256M (fast, ~600 MB).
+    # Swap to "ibm-granite/granite-docling-258M" for doc-tuned VLM or
+    # "ibm-granite/granite-vision-3.3-2b" for higher quality at 2B-param cost.
     opts.do_picture_description = bool(s.get("do_picture_description", False))
+    if opts.do_picture_description:
+        opts.picture_description_options = PictureDescriptionVlmOptions(
+            repo_id=s.get("picture_description_repo_id") or "HuggingFaceTB/SmolVLM-256M-Instruct",
+            prompt=s.get("picture_description_prompt") or "Describe this image in a few sentences.",
+        )
+    # Chart extraction (docling 2.72+): VLM-based chart2csv / chart2code on
+    # detected chart regions. Heavy — pulls granite-vision-v4. Off by default.
+    opts.do_chart_extraction = bool(s.get("do_chart_extraction", False))
     opts.generate_picture_images = True
+    # Table crops join the `images` array when enabled — gives downstream a
+    # fallback when TableFormer mis-parses a complex layout.
+    opts.generate_table_images = bool(s.get("generate_table_images", True))
     opts.images_scale = float(s.get("images_scale", 2.0))
 
     # Explicitly use EasyOCR. Docling's auto-selection picks RapidOCR for
@@ -117,17 +145,21 @@ def _build_converter(settings: dict[str, Any] | None = None):
     # its own pip site-packages dir — not writable on OVH AI Deploy's
     # non-root runtime (UID 42420). EasyOCR caches to ~/.EasyOCR which
     # resolves to /tmp/.EasyOCR via HOME=/tmp.
-    ocr_langs = s.get("ocr_languages") or ["en", "fr"]
-    opts.ocr_options = EasyOcrOptions(lang=ocr_langs)
+    # Lang order matters: EasyOCR's recognizer biases toward the first lang
+    # for ambiguous glyphs (e.g. `ä` vs `a`). Put the dominant doc lang first.
+    # confidence_threshold=0.3 (vs default 0.5) recovers low-confidence
+    # umlauts/accents that would otherwise drop on DE/FR text.
+    ocr_langs = s.get("ocr_languages") or ["de", "fr", "en"]
+    opts.ocr_options = EasyOcrOptions(
+        lang=ocr_langs,
+        confidence_threshold=float(s.get("ocr_confidence_threshold", 0.3)),
+    )
 
+    pdf_fmt = PdfFormatOption(pipeline_cls=pipeline_cls, pipeline_options=opts) \
+        if pipeline_cls else PdfFormatOption(pipeline_options=opts)
     return DocumentConverter(
         format_options={
-            # Threaded pipeline only for PDFs (where multi-page parallelism
-            # matters). Single-image input uses the default pipeline.
-            InputFormat.PDF: PdfFormatOption(
-                pipeline_cls=ThreadedStandardPdfPipeline,
-                pipeline_options=opts,
-            ),
+            InputFormat.PDF: pdf_fmt,
             InputFormat.IMAGE: PdfFormatOption(pipeline_options=opts),
         }
     )
@@ -167,14 +199,17 @@ def _picture_sub_label(picture) -> str:
     return _DOC_ITEM_LABEL_MAP.get(coarse_str, coarse_str)
 
 
-def _page_picture_crops(pictures, doc) -> tuple[dict[str, dict[str, Any]], dict[int, str]]:
-    """Build per-page crops dict + picture_id→region_id map for placeholder
-    rewriting. Region IDs are local to this page (region_1, region_2, …)."""
+def _crops_from_items(pictures, tables) -> tuple[dict[str, dict[str, Any]], dict[int, str]]:
+    """Build crops dict + item_id→region_id map for placeholder rewriting.
+    Pictures get their classifier sub-label (BAR_CHART, LOGO, …); tables
+    are labeled "table". Region IDs are local to the caller (region_1,
+    region_2, …) and ordered pictures-then-tables."""
     crops: dict[str, dict[str, Any]] = {}
-    picture_to_region: dict[int, str] = {}
-    for idx, picture in enumerate(pictures, start=1):
+    item_to_region: dict[int, str] = {}
+    idx = 1
+    for picture in pictures:
         rid = f"region_{idx}"
-        picture_to_region[id(picture)] = rid
+        item_to_region[id(picture)] = rid
         img_attr = getattr(picture, "image", None)
         pil = getattr(img_attr, "pil_image", None) if img_attr is not None else None
         if pil is None:
@@ -183,23 +218,78 @@ def _page_picture_crops(pictures, doc) -> tuple[dict[str, dict[str, Any]], dict[
             "png": _pil_to_png_bytes(pil),
             "label": _picture_sub_label(picture),
         }
-    return crops, picture_to_region
+        idx += 1
+    for table in tables:
+        rid = f"region_{idx}"
+        item_to_region[id(table)] = rid
+        img_attr = getattr(table, "image", None)
+        pil = getattr(img_attr, "pil_image", None) if img_attr is not None else None
+        if pil is None:
+            continue
+        crops[rid] = {
+            "png": _pil_to_png_bytes(pil),
+            "label": "table",
+        }
+        idx += 1
+    return crops, item_to_region
 
 
-def _doc_to_page_result(doc, page_no: int | None = None) -> dict[str, Any]:
+_GRADE_TO_STR = {
+    "excellent": "excellent", "good": "good", "fair": "fair", "poor": "poor",
+}
+
+
+def _confidence_to_dict(scores) -> dict[str, Any] | None:
+    """Convert a docling PageConfidenceScores / ConfidenceReport into a
+    plain JSON-safe dict. Returns None when scores is missing."""
+    if scores is None:
+        return None
+    import math
+
+    def _num(x):
+        if x is None:
+            return None
+        try:
+            f = float(x)
+            return None if math.isnan(f) else round(f, 4)
+        except (TypeError, ValueError):
+            return None
+
+    def _grade(g):
+        if g is None:
+            return None
+        s = str(g).split(".")[-1].lower()
+        return _GRADE_TO_STR.get(s, s)
+
+    return {
+        "parse_score": _num(getattr(scores, "parse_score", None)),
+        "layout_score": _num(getattr(scores, "layout_score", None)),
+        "table_score": _num(getattr(scores, "table_score", None)),
+        "ocr_score": _num(getattr(scores, "ocr_score", None)),
+        "mean_score": _num(getattr(scores, "mean_score", None)),
+        "low_score": _num(getattr(scores, "low_score", None)),
+        "mean_grade": _grade(getattr(scores, "mean_grade", None)),
+        "low_grade": _grade(getattr(scores, "low_grade", None)),
+    }
+
+
+def _doc_to_page_result(doc, page_no: int | None = None, page_confidence=None) -> dict[str, Any]:
     """Render a single page (or the whole doc if page_no is None) into our
-    standard {markdown, crops, width, height} shape."""
-    # Pictures filtered to this page via prov[0].page_no.
-    all_pics = getattr(doc, "pictures", []) or []
-    if page_no is not None:
-        pics_on_page = [
-            p for p in all_pics
-            if getattr(p, "prov", None) and getattr(p.prov[0], "page_no", None) == page_no
+    standard {markdown, crops, width, height, confidence} shape. Both
+    pictures and (when generate_table_images is on) tables become crops."""
+    # Pictures + tables filtered to this page via prov[0].page_no.
+    def _on_page(items):
+        if page_no is None:
+            return list(items)
+        return [
+            i for i in items
+            if getattr(i, "prov", None) and getattr(i.prov[0], "page_no", None) == page_no
         ]
-    else:
-        pics_on_page = list(all_pics)
 
-    crops, picture_to_region = _page_picture_crops(pics_on_page, doc)
+    pics_on_page = _on_page(getattr(doc, "pictures", []) or [])
+    tables_on_page = _on_page(getattr(doc, "tables", []) or [])
+
+    crops, item_to_region = _crops_from_items(pics_on_page, tables_on_page)
 
     try:
         markdown = doc.export_to_markdown(page_no=page_no) if page_no is not None \
@@ -207,7 +297,7 @@ def _doc_to_page_result(doc, page_no: int | None = None) -> dict[str, Any]:
     except Exception:
         markdown = ""
 
-    markdown = _rewrite_picture_tags(markdown, doc, picture_to_region, crops)
+    markdown = _rewrite_picture_tags(markdown, doc, item_to_region, crops)
 
     # Page dimensions if available.
     w = h = 0
@@ -218,12 +308,21 @@ def _doc_to_page_result(doc, page_no: int | None = None) -> dict[str, Any]:
             w = int(getattr(size, "width", 0) or 0)
             h = int(getattr(size, "height", 0) or 0)
 
-    return {"markdown": markdown, "crops": crops, "width": w, "height": h}
+    return {
+        "markdown": markdown,
+        "crops": crops,
+        "width": w,
+        "height": h,
+        "confidence": _confidence_to_dict(page_confidence),
+    }
 
 
 def extract(image_bytes: bytes, settings: dict[str, Any] | None = None) -> dict[str, Any]:
-    """Single-image (or single-page rasterized) extraction. Returns the
-    same {markdown, crops, width, height} shape that jobs.py expects."""
+    """Single-image (or single-page rasterized) extraction.
+
+    Returns {markdown, crops, width, height, confidence}. `confidence` is
+    a JSON-safe dict of docling's quality scores (parse/layout/table/ocr
+    plus mean/low + grade), or None if scores were unavailable."""
     settings = settings or {}
     img = Image.open(io.BytesIO(image_bytes))
     if img.mode != "RGB":
@@ -244,7 +343,9 @@ def extract(image_bytes: bytes, settings: dict[str, Any] | None = None) -> dict[
         except OSError:
             pass
 
-    out = _doc_to_page_result(doc, page_no=None)
+    # Single image = one logical page; docling's ConfidenceReport carries
+    # overall scores. Use those directly.
+    out = _doc_to_page_result(doc, page_no=None, page_confidence=getattr(result, "confidence", None))
     # For single images we trust the input PIL dimensions over docling's
     # internal page size (which can be in points, not pixels).
     out["width"] = w
@@ -252,13 +353,14 @@ def extract(image_bytes: bytes, settings: dict[str, Any] | None = None) -> dict[
     return out
 
 
-def extract_pdf(pdf_bytes: bytes, settings: dict[str, Any] | None = None) -> list[dict[str, Any]]:
+def extract_pdf(pdf_bytes: bytes, settings: dict[str, Any] | None = None) -> dict[str, Any]:
     """Multi-page PDF extraction. Hands the PDF directly to docling so the
     text layer (editable PDFs) is used without per-page OCR.
 
-    Returns a list of per-page results, each with the same shape as
-    extract(): {markdown, crops, width, height}. Caller (jobs.run_ocr_pdf)
-    is responsible for prefixing region_ids per page.
+    Returns {pages: list[per-page result], confidence: overall dict}.
+    Each page has the same shape as extract(): {markdown, crops, width,
+    height, confidence}. Caller (jobs.run_ocr_pdf) is responsible for
+    prefixing region_ids per page.
     """
     settings = settings or {}
     converter = get_converter()
@@ -281,7 +383,15 @@ def extract_pdf(pdf_bytes: bytes, settings: dict[str, Any] | None = None) -> lis
         n_pages = int(doc.num_pages())
     except Exception:
         n_pages = len(getattr(doc, "pages", {}) or {}) or 1
-    return [_doc_to_page_result(doc, page_no=p) for p in range(1, n_pages + 1)]
+
+    overall = getattr(result, "confidence", None)
+    per_page_scores = getattr(overall, "pages", {}) if overall is not None else {}
+
+    pages = [
+        _doc_to_page_result(doc, page_no=p, page_confidence=per_page_scores.get(p))
+        for p in range(1, n_pages + 1)
+    ]
+    return {"pages": pages, "confidence": _confidence_to_dict(overall)}
 
 
 def _rewrite_picture_tags(

@@ -110,6 +110,7 @@ def run_ocr_image(image_bytes: bytes, settings: dict[str, Any], page_number: int
             "detected_language": _detect_language(payload["markdown"]),
             "page_count": 1,
             "duration_ms": int((time.monotonic() - t0) * 1000),
+            "confidence": res.get("confidence"),
             "settings": settings,
         },
     }
@@ -124,7 +125,9 @@ def run_ocr_pdf(pdf_bytes: bytes, settings: dict[str, Any], dpi: int) -> dict[st
     from . import ocr_service
     t0 = time.monotonic()
 
-    page_results = ocr_service.extract_pdf(pdf_bytes, settings)
+    pdf_result = ocr_service.extract_pdf(pdf_bytes, settings)
+    page_results = pdf_result["pages"]
+    overall_confidence = pdf_result.get("confidence")
     total_pages = len(page_results)
 
     all_markdown: list[str] = []
@@ -146,6 +149,7 @@ def run_ocr_pdf(pdf_bytes: bytes, settings: dict[str, Any], dpi: int) -> dict[st
             "detected_language": _detect_language(full_markdown),
             "page_count": total_pages,
             "duration_ms": int((time.monotonic() - t0) * 1000),
+            "confidence": overall_confidence,
             "settings": settings,
         },
     }

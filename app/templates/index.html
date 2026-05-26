@@ -133,7 +133,9 @@
         <label><input type="checkbox" id="opt_ocr" checked> OCR (read text in images)</label>
         <label><input type="checkbox" id="opt_table" checked> Table structure</label>
         <label><input type="checkbox" id="opt_picclass" checked> Picture classification <span class="hint">(BAR_CHART / LINE_CHART / LOGO / …)</span></label>
-        <label><input type="checkbox" id="opt_picdesc"> Picture description <span class="hint">(slow — runs a VLM caption per image)</span></label>
+        <label><input type="checkbox" id="opt_tableimg" checked> Table crops <span class="hint">(emit PNG of each detected table)</span></label>
+        <label><input type="checkbox" id="opt_picdesc"> Picture description <span class="hint">(SmolVLM-256M caption per image — slow)</span></label>
+        <label><input type="checkbox" id="opt_chartextract"> Chart extraction <span class="hint">(Granite-Vision chart2csv — very slow)</span></label>
       </div>
     </div>
 
@@ -214,12 +216,12 @@ function setStatus(text, cls='', live=true) {
 // --- build settings JSON from checkboxes ---
 function buildSettings() {
   const s = {};
-  // Docling pipeline toggles — defaults match Dockerfile defaults so we
-  // only include them when the user explicitly overrides.
   s.do_ocr = $('#opt_ocr').checked;
   s.do_table_structure = $('#opt_table').checked;
   s.do_picture_classification = $('#opt_picclass').checked;
   s.do_picture_description = $('#opt_picdesc').checked;
+  s.do_chart_extraction = $('#opt_chartextract').checked;
+  s.generate_table_images = $('#opt_tableimg').checked;
   const scale = parseFloat($('#images_scale').value);
   if (scale > 0) s.images_scale = scale;
   return JSON.stringify(s);
@@ -268,12 +270,24 @@ function render(result) {
   const safeHtml = DOMPurify.sanitize(rawHtml, { ADD_TAGS: ['img'], ADD_ATTR: ['src', 'alt'] });
 
   // Render scalar fields in the grid; render the settings object as its own
-  // pretty-printed block with a copy button.
+  // pretty-printed block with a copy button. Confidence (a docling
+  // ConfidenceReport) collapses to "GRADE · mean=0.93" in the grid; the
+  // full dict still lives in the settings/raw JSON below.
   const settings = meta.settings || {};
+  const formatVal = (k, v) => {
+    if (v == null) return '—';
+    if (k === 'confidence' && typeof v === 'object') {
+      const grade = (v.mean_grade || '?').toUpperCase();
+      const mean = v.mean_score != null ? v.mean_score.toFixed(2) : '?';
+      const low  = v.low_score  != null ? v.low_score.toFixed(2)  : '?';
+      return `${grade} · mean ${mean} · low ${low}`;
+    }
+    return (typeof v === 'object') ? JSON.stringify(v) : String(v);
+  };
   const metaCards = Object.entries(meta)
     .filter(([k]) => k !== 'settings')
     .map(([k, v]) => {
-      const val = (typeof v === 'object') ? JSON.stringify(v) : String(v);
+      const val = formatVal(k, v);
       return `<div class="meta-item"><div class="label">${k}</div><div class="value" title="${escapeHtml(val)}">${escapeHtml(val.length > 80 ? val.slice(0, 80) + '…' : val)}</div></div>`;
     }).join('');
   const settingsPretty = JSON.stringify(settings, null, 2);

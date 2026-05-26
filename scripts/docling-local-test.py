@@ -46,14 +46,16 @@ def main() -> int:
         from app.ocr_service import extract_pdf
         print("first PDF inference (cold) — downloads models + warms up...")
         t0 = time.time()
-        page_results = extract_pdf(file_bytes, {})
+        pdf_res = extract_pdf(file_bytes, {})
+        page_results = pdf_res["pages"]
         cold = time.time() - t0
         print(f"  cold run: {cold:.1f}s over {len(page_results)} page(s) "
               f"= {cold / max(1, len(page_results)):.1f}s/page")
 
         print("second PDF inference (warm)...")
         t0 = time.time()
-        page_results = extract_pdf(file_bytes, {})
+        pdf_res = extract_pdf(file_bytes, {})
+        page_results = pdf_res["pages"]
         warm = time.time() - t0
         print(f"  warm run: {warm:.1f}s over {len(page_results)} page(s) "
               f"= {warm / max(1, len(page_results)):.1f}s/page")
@@ -64,6 +66,7 @@ def main() -> int:
             for rid, c in r.get("crops", {}).items():
                 crops[f"p{page_idx}_{rid}"] = c
         page_count = len(page_results)
+        print(f"  overall confidence: {pdf_res.get('confidence')}")
     else:
         print("first inference (cold) — this downloads models + warms up...")
         t0 = time.time()

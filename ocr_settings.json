@@ -3,6 +3,11 @@
   "do_table_structure": true,
   "do_picture_classification": true,
   "do_picture_description": false,
+  "do_chart_extraction": false,
+  "generate_table_images": true,
   "images_scale": 2.0,
-  "ocr_languages": ["en", "fr"]
+  "ocr_languages": ["de", "fr", "en"],
+  "ocr_confidence_threshold": 0.3,
+  "picture_description_repo_id": "HuggingFaceTB/SmolVLM-256M-Instruct",
+  "picture_description_prompt": "Describe this image in a few sentences."
 }
