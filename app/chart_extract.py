@@ -152,6 +152,13 @@ def extract_chart_tables(
             title, gfm = _parse_deplot_to_gfm(raw)
             results[rid] = {"gfm": gfm, "title": title, "raw": raw}
         except Exception as e:  # noqa: BLE001
+            # First-chart-only: re-raise so the worker traceback surfaces
+            # via /jobs/{id}. Subsequent chart failures get logged + null'd
+            # so one bad chart doesn't kill the rest. Switch the bare
+            # `raise` to the swallow path once DePlot is known-working on
+            # the target GPU.
             log.warning("DePlot failed on %s: %s", rid, e)
+            if not results:
+                raise
             results[rid] = {"gfm": "", "title": None, "raw": "", "error": str(e)}
     return results
