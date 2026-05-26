@@ -136,6 +136,11 @@ def extract_chart_tables(
     import torch
 
     results: dict[str, dict[str, Any]] = {}
+    # Match the model's dtype on float tensors only. Pix2StructProcessor
+    # returns flattened_patches as float32 by default — feeding that into
+    # an fp16 model crashes with "mat1 and mat2 dtype mismatch" inside the
+    # patch projection.
+    model_dtype = next(model.parameters()).dtype
     # One chart at a time — DePlot's processor handles a list but the
     # per-image input shapes differ, batching gives no win without
     # padding/cropping hacks. ~3-5s/chart on V100 is fine.
@@ -144,10 +149,17 @@ def extract_chart_tables(
             if img.mode != "RGB":
                 img = img.convert("RGB")
             inputs = processor(images=img, text=_PROMPT, return_tensors="pt")
-            if device == "cuda":
-                inputs = {k: v.to("cuda") for k, v in inputs.items()}
+            cast_inputs: dict[str, Any] = {}
+            for k, v in inputs.items():
+                if device == "cuda":
+                    v = v.to("cuda")
+                # Only cast floating-point tensors; integer ids/masks stay
+                # as int64.
+                if v.is_floating_point():
+                    v = v.to(model_dtype)
+                cast_inputs[k] = v
             with torch.inference_mode():
-                out_ids = model.generate(**inputs, max_new_tokens=max_new_tokens)
+                out_ids = model.generate(**cast_inputs, max_new_tokens=max_new_tokens)
             raw = processor.decode(out_ids[0], skip_special_tokens=True)
             title, gfm = _parse_deplot_to_gfm(raw)
             results[rid] = {"gfm": gfm, "title": title, "raw": raw}
