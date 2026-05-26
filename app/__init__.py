@@ -1,1 +1,1 @@
-"""PaddleOCR → HillMetrics markdown microservice."""
+"""Docling → HillMetrics markdown microservice."""

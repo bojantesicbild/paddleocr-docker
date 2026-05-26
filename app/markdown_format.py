@@ -1,4 +1,4 @@
-"""Page/document assembly for PaddleOCR-VL output.
+"""Page/document assembly for OCR backend output (Docling on this branch).
 
 The VL pipeline emits high-quality page markdown directly (tables as GFM,
 formulas as LaTeX). This module only adds HillMetrics `> Page N` markers and

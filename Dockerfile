@@ -1,9 +1,12 @@
 # syntax=docker/dockerfile:1.6
+# CPU variant — Docling backend (torch CPU). For local dev on Mac/Linux.
+
 # -------- Stage 1: build wheels --------
 FROM python:3.12-slim AS builder
 
 ENV PIP_DISABLE_PIP_VERSION_CHECK=1 \
-    PIP_NO_CACHE_DIR=1
+    PIP_NO_CACHE_DIR=1 \
+    PIP_ROOT_USER_ACTION=ignore
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
         build-essential \
@@ -13,9 +16,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 WORKDIR /build
 COPY requirements.txt .
+# CPU torch wheels from PyTorch's CPU index (smaller than the CUDA wheels).
 RUN pip wheel --wheel-dir=/wheels \
-        --extra-index-url https://www.paddlepaddle.org.cn/packages/stable/cpu/ \
-        paddlepaddle==3.3.0 \
+        --extra-index-url https://download.pytorch.org/whl/cpu \
+        torch torchvision \
         -r requirements.txt
 
 
@@ -27,14 +31,12 @@ ENV PIP_DISABLE_PIP_VERSION_CHECK=1 \
     PIP_ROOT_USER_ACTION=ignore \
     PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
-    PADDLE_PDX_DISABLE_MODEL_SOURCE_CHECK=True \
-    PADDLE_PDX_CACHE_HOME=/tmp/.paddlex \
     HOME=/tmp \
     OCR_LANGUAGE=ch \
-    OMP_NUM_THREADS=4
+    OMP_NUM_THREADS=4 \
+    DOCLING_ARTIFACTS_PATH=/tmp/.docling \
+    HF_HOME=/tmp/.cache/huggingface
 
-# Runtime system libraries required by opencv + paddlepaddle, plus redis+supervisor
-# for the single-container queue (supervisord runs redis + api + rq worker).
 RUN apt-get update && apt-get install -y --no-install-recommends \
         libgl1 \
         libglib2.0-0 \
@@ -45,16 +47,15 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         curl \
         redis-server \
         supervisor \
+        poppler-utils \
+        tesseract-ocr \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /srv
 
 COPY --from=builder /wheels /wheels
 COPY requirements.txt .
-# Install, then strip bytecode / package test dirs (~500 MB savings on CPU
-# image, no behavioral impact). PIP_NO_CACHE_DIR=1 already disables the
-# pip cache so no `pip cache purge` needed.
-RUN pip install --no-index --find-links=/wheels paddlepaddle==3.3.0 -r requirements.txt \
+RUN pip install --no-index --find-links=/wheels torch torchvision -r requirements.txt \
     && rm -rf /wheels \
     && find /usr/local/lib -type d -name '__pycache__' -prune -exec rm -rf {} + 2>/dev/null || true \
     && find /usr/local/lib -type d -name 'tests' -path '*/site-packages/*' -prune -exec rm -rf {} + 2>/dev/null || true \
@@ -64,17 +65,14 @@ RUN pip install --no-index --find-links=/wheels paddlepaddle==3.3.0 -r requireme
 COPY ocr_settings.json supervisord.conf ./
 COPY app ./app
 
-# Pre-download PaddleOCR-VL-1.5 weights so first request doesn't pay the
-# download cost. Off by default on CPU builds because loading the VLM at
-# build time needs ~10 GB RAM. Enable with --build-arg PRECACHE_MODELS=1
-# on hosts with more RAM (the GPU image always sets it).
 ARG PRECACHE_MODELS=0
-RUN mkdir -p /tmp/.paddlex && chmod -R 0777 /tmp/.paddlex && \
+RUN mkdir -p /tmp/.docling /tmp/.cache/huggingface && \
+    chmod -R 0777 /tmp/.docling /tmp/.cache /tmp && \
     if [ "$PRECACHE_MODELS" = "1" ]; then \
-      python -c "import os; os.environ['OCR_LANGUAGE']='${OCR_LANGUAGE}'; \
-from app.ocr_service import get_pipeline; get_pipeline(); print('models cached')"; \
+      python -c "from docling.utils.model_downloader import download_models; download_models(); print('docling models cached')" \
+        || echo "WARN: precache failed; first boot will download models"; \
     else echo "skipping model pre-cache (PRECACHE_MODELS=0)"; fi && \
-    chmod -R 0777 /tmp/.paddlex
+    chmod -R 0777 /tmp/.docling /tmp/.cache /tmp
 
 EXPOSE 8080
 

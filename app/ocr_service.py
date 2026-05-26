@@ -1,71 +1,47 @@
-"""PaddleOCR-VL-1.5 extraction. Returns VL-native markdown + in-memory crops."""
+"""Docling-based extraction. Same `extract()` contract as the paddle backend:
+
+    extract(image_bytes, settings) -> {
+        markdown: str,
+        crops:   {region_id: {"png": bytes, "label": str}},
+        width:   int,
+        height:  int,
+    }
+
+Docling uses smaller, specialized models per task (layout / table-structure /
+OCR / picture-classification) and runs on torch. On a V100 (CC 7.0) it is
+~10-20× faster than PaddleOCR-VL because there's no autoregressive VLM step.
+The trade-off: text *inside* charts isn't transcribed by Docling itself —
+only the chart region is labeled. Downstream pipelines can route the cropped
+chart to a bigger VL model.
+"""
 from __future__ import annotations
 
 import io
 import json
 import os
-import re
 import tempfile
 import threading
 from pathlib import Path
 from typing import Any
 
-os.environ.setdefault("PADDLE_PDX_DISABLE_MODEL_SOURCE_CHECK", "True")
-
-
-def _patch_paddle_tensor_int():
-    """Workaround for paddle-cpu 3.3.0 bug: Tensor.__int__ breaks on shape-[1]
-    tensors with "only 0-dimensional arrays can be converted to Python scalars".
-    PaddleOCR-VL's VLM preprocessor hits this. .item() handles both 0-d and
-    1-element N-d tensors.
-    """
-    import paddle  # noqa: WPS433 — deliberate late import inside patcher
-    import numpy as np
-
-    def _lenient_int(var):
-        arr = np.array(var)
-        return int(arr.item() if arr.size == 1 else arr)
-
-    paddle.Tensor.__int__ = _lenient_int
-
-
-_patch_paddle_tensor_int()
-
-
-def _select_device():
-    """Bind paddle to GPU:0 when CUDA is compiled in. paddlex's
-    get_default_device() falls back to 'cpu' unless paddle has been set to
-    a GPU first — without this call the VLM runs on CPU even with
-    paddlepaddle-gpu installed and a GPU visible (~600s/page on Xeon vs
-    ~5–15s on V100S).
-    """
-    import paddle
-
-    if paddle.device.is_compiled_with_cuda() and paddle.device.cuda.device_count() > 0:
-        paddle.device.set_device("gpu:0")
-
-
-_select_device()
-
 from PIL import Image
 
-_pipe = None
-_pipe_lock = threading.Lock()
+_converter = None
+_converter_lock = threading.Lock()
 
 _SETTINGS_PATH = Path(__file__).resolve().parent.parent / "ocr_settings.json"
 
-# Maps `include_<name>: true|false` settings keys to the PP-DocLayoutV3 label
-# that the VL pipeline filters via `markdown_ignore_labels`. A false flag means
-# "ignore this label" — consistent with the Baidu demo's behavior where the
-# defaults filter all of these out.
-_BLOCK_FILTER_FLAGS = {
-    "include_header": "header",
-    "include_header_image": "header_image",
-    "include_footer": "footer",
-    "include_footer_image": "footer_image",
-    "include_page_number": "number",
-    "include_footnote": "footnote",
-    "include_aside_text": "aside_text",
+# Map Docling DocItemLabel values → the lowercase labels we emit in
+# <image label="..."> tags. Keeps the markdown contract stable across
+# backend swaps.
+_DOC_ITEM_LABEL_MAP = {
+    "chart": "chart",
+    "picture": "image",
+    "table": "table",
+    "formula": "formula",
+    "page_header": "header",
+    "page_footer": "footer",
+    "footnote": "footnote",
 }
 
 
@@ -76,45 +52,42 @@ def _load_startup_settings() -> dict[str, Any]:
         return {}
 
 
-def get_pipeline():
-    global _pipe
-    if _pipe is None:
-        with _pipe_lock:
-            if _pipe is None:
-                from paddleocr import PaddleOCRVL
+def get_converter():
+    """Singleton DocumentConverter. Heavy: loads layout + table + picture
+    classifier models (~600-800 MB)."""
+    global _converter
+    if _converter is None:
+        with _converter_lock:
+            if _converter is None:
+                from docling.datamodel.base_models import InputFormat
+                from docling.datamodel.pipeline_options import PdfPipelineOptions
+                from docling.document_converter import DocumentConverter, PdfFormatOption
 
                 s = _load_startup_settings()
-                kwargs: dict[str, Any] = {
-                    "pipeline_version": "v1.5",
-                    "use_doc_orientation_classify": s.get("use_doc_orientation_classify", False),
-                    "use_doc_unwarping": s.get("use_doc_unwarping", False),
-                    "use_chart_recognition": s.get("chart_recognition", False),
-                    "use_seal_recognition": s.get("use_seal_recognition", False),
-                    # The multi-process VLM worker pool crashes on CPU paddle
-                    # ("only 0-dimensional arrays can be converted to Python
-                    # scalars"). Disable — we're single-request-at-a-time anyway.
-                    "use_queues": False,
-                }
-                # High-Performance Inference: lets paddle auto-select among
-                # Paddle Inference, ONNX Runtime, OpenVINO, TensorRT, with
-                # FP16 mixed precision where available. Real benefit on V100
-                # is mainly the layout/preprocessor models; the VLM step may
-                # still fall back to native paddle.
-                if os.environ.get("OCR_ENABLE_HPI", "0").strip() == "1":
-                    kwargs["enable_hpi"] = True
-                # Remote VL inference: set VL_REMOTE_URL to offload the
-                # autoregressive generation step to a vLLM/sglang/fastdeploy
-                # server (typically on a CC≥8.0 GPU elsewhere). The layout
-                # detector still runs locally on this container's GPU.
-                remote_url = os.environ.get("VL_REMOTE_URL", "").strip()
-                if remote_url:
-                    kwargs["vl_rec_backend"] = os.environ.get("VL_REMOTE_BACKEND", "vllm-server")
-                    kwargs["vl_rec_server_url"] = remote_url
-                    api_key = os.environ.get("VL_REMOTE_API_KEY", "").strip()
-                    if api_key:
-                        kwargs["vl_rec_api_key"] = api_key
-                _pipe = PaddleOCRVL(**kwargs)
-    return _pipe
+
+                opts = PdfPipelineOptions()
+                opts.do_ocr = True
+                opts.do_table_structure = True
+                # Picture-level enrichment is what gives us BAR_CHART /
+                # LINE_CHART / LOGO / SIGNATURE / etc. labels on top of the
+                # coarse DocItemLabel.
+                opts.do_picture_classification = bool(
+                    s.get("do_picture_classification", True)
+                )
+                # Optional VLM caption of each picture; expensive — off by default.
+                opts.do_picture_description = bool(
+                    s.get("do_picture_description", False)
+                )
+                opts.generate_picture_images = True
+                opts.images_scale = float(s.get("images_scale", 2.0))
+
+                _converter = DocumentConverter(
+                    format_options={
+                        InputFormat.PDF: PdfFormatOption(pipeline_options=opts),
+                        InputFormat.IMAGE: PdfFormatOption(pipeline_options=opts),
+                    }
+                )
+    return _converter
 
 
 def _pil_to_png_bytes(img: Image.Image) -> bytes:
@@ -125,97 +98,72 @@ def _pil_to_png_bytes(img: Image.Image) -> bytes:
     return buf.getvalue()
 
 
-_MD_IMG_RE = re.compile(r"!\[[^\]]*\]\(([^)]+)\)")
+def _picture_sub_label(picture) -> str:
+    """Pull the most specific label off a Docling PictureItem:
+    prefer the picture-classifier sub-label (BAR_CHART, LOGO, …) over the
+    coarse DocItemLabel (CHART, PICTURE)."""
+    for ann in getattr(picture, "annotations", []) or []:
+        classes = getattr(ann, "predicted_classes", None)
+        if classes:
+            top = max(classes, key=lambda c: getattr(c, "confidence", 0.0))
+            name = getattr(top, "class_name", None)
+            if name:
+                return name.lower()
+    coarse = getattr(picture, "label", None)
+    coarse_str = str(coarse).split(".")[-1].lower() if coarse else "image"
+    return _DOC_ITEM_LABEL_MAP.get(coarse_str, coarse_str)
 
 
 def extract(image_bytes: bytes, settings: dict[str, Any] | None = None) -> dict[str, Any]:
-    """Run PaddleOCR-VL-1.5 on a single page image.
-
-    Returns dict with:
-      markdown: final markdown (image refs already rewritten to HillMetrics tags)
-      crops: {region_id: png_bytes}
-      width, height: page dimensions
-    """
     settings = settings or {}
     img = Image.open(io.BytesIO(image_bytes))
     if img.mode != "RGB":
         img = img.convert("RGB")
     w, h = img.size
 
-    pipe = get_pipeline()
+    converter = get_converter()
 
-    predict_kwargs = {
-        "use_doc_orientation_classify": settings.get("use_doc_orientation_classify"),
-        "use_doc_unwarping": settings.get("use_doc_unwarping"),
-        "use_chart_recognition": settings.get("chart_recognition"),
-        "use_seal_recognition": settings.get("use_seal_recognition"),
-        "use_ocr_for_image_block": settings.get("use_ocr_for_image_block"),
-        "layout_threshold": settings.get("layout_threshold"),
-        # Speed/quality knobs. Lower max_pixels = fewer VLM input tokens =
-        # faster inference, but small text may be missed. max_new_tokens
-        # caps generation length per block.
-        "max_pixels": settings.get("max_pixels"),
-        "max_new_tokens": settings.get("max_new_tokens"),
-        "use_queues": False,
-    }
-    predict_kwargs = {k: v for k, v in predict_kwargs.items() if v is not None}
+    # Docling reads from disk. PNG is what /ocr/image and pdf_split feed us.
+    with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as f:
+        f.write(image_bytes)
+        path = f.name
+    try:
+        result = converter.convert(path)
+        doc = result.document
+    finally:
+        try:
+            os.unlink(path)
+        except OSError:
+            pass
 
-    # Build the ignore-label list from the include_* flags. Anything not
-    # explicitly included is filtered out of the final markdown.
-    ignore_labels = [
-        label for key, label in _BLOCK_FILTER_FLAGS.items() if not settings.get(key, False)
-    ]
-    predict_kwargs["markdown_ignore_labels"] = ignore_labels
-
-    with tempfile.TemporaryDirectory() as td:
-        tmp = Path(td)
-        img_path = tmp / "page.png"
-        img.save(img_path, format="PNG")
-        results = list(pipe.predict(str(img_path), **predict_kwargs))
-
-    if not results:
-        return {"markdown": "", "crops": {}, "width": w, "height": h}
-
-    r = results[0]
-    md_info = r._to_markdown(pretty=False)
-    raw_markdown = md_info.get("markdown_texts") or ""
-    md_images: dict[str, Image.Image] = md_info.get("markdown_images") or {}
-
-    # Build path → label map by walking the VL pipeline's per-block structure.
-    # Blocks with images expose block.image["path"], matched against the paths
-    # embedded in markdown's ![](path) refs.
-    path_to_label: dict[str, str] = {}
-    for block in r.get("parsing_res_list", []):
-        img = getattr(block, "image", None)
-        if img and img.get("path"):
-            label = (getattr(block, "label", "") or "image").lower()
-            path_to_label[img["path"]] = label
-
-    # Assign stable region IDs in path-order as they appear in markdown
-    path_to_region: dict[str, str] = {}
-    for idx, path in enumerate(_MD_IMG_RE.findall(raw_markdown), start=1):
-        path_to_region.setdefault(path, f"region_{idx}")
-
+    # Walk pictures in document order, assign stable region_ids, collect crops.
     crops: dict[str, dict[str, Any]] = {}
-    for path, region_id in path_to_region.items():
-        pil = md_images.get(path)
+    picture_to_region: dict[int, str] = {}
+    for idx, picture in enumerate(getattr(doc, "pictures", []) or [], start=1):
+        rid = f"region_{idx}"
+        picture_to_region[id(picture)] = rid
+
+        pil = None
+        img_attr = getattr(picture, "image", None)
+        if img_attr is not None:
+            pil = getattr(img_attr, "pil_image", None)
         if pil is None:
             continue
-        crops[region_id] = {
+        crops[rid] = {
             "png": _pil_to_png_bytes(pil),
-            "label": path_to_label.get(path, "image"),
+            "label": _picture_sub_label(picture),
         }
 
-    # Rewrite ![…](path) → <image label="…">[region_id]</image>
-    def _replace(m: re.Match) -> str:
-        path = m.group(1)
-        rid = path_to_region.get(path)
-        if not rid:
-            return m.group(0)
-        label = path_to_label.get(path, "image")
-        return f'<image label="{label}">[{rid}]</image>'
+    # Native markdown.
+    try:
+        markdown = doc.export_to_markdown()
+    except Exception:
+        markdown = ""
 
-    markdown = _MD_IMG_RE.sub(_replace, raw_markdown).strip()
+    # Docling emits `![](data:image/png;base64,…)` or `<!-- image -->` for
+    # pictures. Rewrite those to our `<image label="…">[region_N]</image>`
+    # contract using positional matching: nth picture in the doc → region_N.
+    markdown = _rewrite_picture_tags(markdown, doc, picture_to_region, crops)
 
     return {
         "markdown": markdown,
@@ -223,3 +171,43 @@ def extract(image_bytes: bytes, settings: dict[str, Any] | None = None) -> dict[
         "width": w,
         "height": h,
     }
+
+
+def _rewrite_picture_tags(
+    markdown: str,
+    doc,
+    picture_to_region: dict[int, str],
+    crops: dict[str, dict[str, Any]],
+) -> str:
+    """Replace Docling's default picture placeholders in the markdown with
+    HillMetrics-style `<image label="…">[region_N]</image>` tags.
+
+    Docling currently writes either `![](data:…)` or `<!-- image -->` /
+    a literal placeholder. We replace them positionally with `region_N`
+    in the same order the pictures appear in the document.
+    """
+    import re
+
+    # Build label lookup by region order.
+    region_labels: list[tuple[str, str]] = [
+        (rid, crops[rid]["label"]) for rid in sorted(crops, key=lambda r: int(r.split("_")[1]))
+    ]
+    if not region_labels:
+        return markdown
+
+    placeholder_re = re.compile(
+        r"(!\[[^\]]*\]\([^)]+\)|<!--\s*image\s*-->|<!--\s*figure\s*-->)",
+        flags=re.IGNORECASE,
+    )
+
+    counter = {"i": 0}
+
+    def _sub(m: re.Match) -> str:
+        i = counter["i"]
+        counter["i"] += 1
+        if i >= len(region_labels):
+            return m.group(0)
+        rid, label = region_labels[i]
+        return f'<image label="{label}">[{rid}]</image>'
+
+    return placeholder_re.sub(_sub, markdown).strip()
