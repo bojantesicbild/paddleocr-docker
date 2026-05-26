@@ -12,9 +12,9 @@ class ImageCrop(BaseModel):
 
 
 class OCRMetadata(BaseModel):
-    library: str = "paddleocr"
-    model: str = "PaddleOCR-VL-1.5"
-    version: str = "3.4.0"
+    library: str = "docling"
+    model: str = "Docling"
+    version: str = "2"
     language: str = Field(description="Configured OCR model language (env OCR_LANGUAGE)")
     detected_language: dict[str, Any] | None = Field(
         default=None,

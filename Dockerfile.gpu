@@ -1,7 +1,7 @@
 # syntax=docker/dockerfile:1.6
-# GPU variant. Build with:
+# GPU variant — Docling backend (torch). Build with:
 #   docker compose -f docker-compose.yml -f docker-compose.gpu.yml build
-# Target platform is linux/amd64 only (paddlepaddle-gpu ships no arm64 CUDA wheels).
+# linux/amd64 only.
 
 # -------- Stage 1: build wheels --------
 FROM nvidia/cuda:12.6.3-cudnn-runtime-ubuntu24.04 AS builder
@@ -9,6 +9,7 @@ FROM nvidia/cuda:12.6.3-cudnn-runtime-ubuntu24.04 AS builder
 ENV PIP_DISABLE_PIP_VERSION_CHECK=1 \
     PIP_NO_CACHE_DIR=1 \
     PIP_BREAK_SYSTEM_PACKAGES=1 \
+    PIP_ROOT_USER_ACTION=ignore \
     DEBIAN_FRONTEND=noninteractive
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -24,9 +25,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 WORKDIR /build
 COPY requirements.txt .
+# torch CUDA wheels from PyTorch's own index. cu126 wheels are compatible
+# with our CUDA 12.6.3 runtime base.
 RUN pip wheel --wheel-dir=/wheels \
-        --extra-index-url https://www.paddlepaddle.org.cn/packages/stable/cu126/ \
-        paddlepaddle-gpu==3.3.0 \
+        --extra-index-url https://download.pytorch.org/whl/cu126 \
+        torch torchvision \
         -r requirements.txt
 
 
@@ -39,16 +42,14 @@ ENV PIP_DISABLE_PIP_VERSION_CHECK=1 \
     PIP_ROOT_USER_ACTION=ignore \
     PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
-    PADDLE_PDX_DISABLE_MODEL_SOURCE_CHECK=True \
-    PADDLE_PDX_CACHE_HOME=/tmp/.paddlex \
     HOME=/tmp \
     OCR_LANGUAGE=ch \
     OMP_NUM_THREADS=4 \
-    OCR_ENABLE_HPI=0 \
+    DOCLING_ARTIFACTS_PATH=/tmp/.docling \
+    HF_HOME=/tmp/.cache/huggingface \
     DEBIAN_FRONTEND=noninteractive
 
-# Optional API key baked at build time (passed via --build-arg from a CI secret).
-# When empty, the API runs without auth. When set, clients must send X-API-Key.
+# Optional API key baked at build time (passed via --build-arg from CI secret).
 ARG OCR_API_KEY=""
 ENV OCR_API_KEY=${OCR_API_KEY}
 
@@ -64,6 +65,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         curl \
         redis-server \
         supervisor \
+        poppler-utils \
+        tesseract-ocr \
     && ln -sf /usr/bin/python3.12 /usr/local/bin/python \
     && ln -sf /usr/bin/python3.12 /usr/local/bin/python3 \
     && rm -rf /var/lib/apt/lists/*
@@ -72,42 +75,28 @@ WORKDIR /srv
 
 COPY --from=builder /wheels /wheels
 COPY requirements.txt .
-# Install, then strip bytecode / package test dirs — saves ~1-2 GB in the
-# final image with no behavioral impact. (No `pip cache purge` because
-# PIP_NO_CACHE_DIR=1 already disables the cache.)
-RUN pip install --no-index --find-links=/wheels paddlepaddle-gpu==3.3.0 -r requirements.txt \
+RUN pip install --no-index --find-links=/wheels torch torchvision -r requirements.txt \
     && rm -rf /wheels \
     && find /usr/local/lib /usr/lib/python3.12 -type d -name '__pycache__' -prune -exec rm -rf {} + 2>/dev/null || true \
     && find /usr/local/lib /usr/lib/python3.12 -type d -name 'tests' -path '*/site-packages/*' -prune -exec rm -rf {} + 2>/dev/null || true \
     && find /usr/local/lib /usr/lib/python3.12 -type f -name '*.pyc' -delete 2>/dev/null || true \
     && rm -rf /root/.cache /tmp/pip-*
 
-# Install High-Performance Inference deps (TensorRT, ONNX Runtime, OpenVINO).
-# These let paddleocr auto-select a faster runtime + FP16 on V100-class GPUs.
-# Build with --build-arg ENABLE_HPI=0 to skip and save ~500 MB if HPI isn't
-# helping for your model.
-ARG ENABLE_HPI=1
-RUN if [ "$ENABLE_HPI" = "1" ]; then \
-      paddleocr install_hpi_deps gpu \
-        || echo "WARN: install_hpi_deps gpu failed; HPI will fall back to native paddle"; \
-    fi
-
 COPY ocr_settings.json supervisord.conf ./
 COPY app ./app
 
-# Pre-download PaddleOCR-VL-1.5 weights so first request doesn't pay the
-# download cost. The CI workflow + docker-compose.gpu.yml both set
-# PRECACHE_MODELS=1 — this bakes ~5 GB of weights into the image and makes
-# first-boot ~30s rather than 5–10 min.
+# Pre-download Docling models so first request doesn't pay the ~30-60s
+# download cost. Total ~600-800 MB (layout + table + picture-classifier).
 ARG PRECACHE_MODELS=0
-RUN mkdir -p /tmp/.paddlex && chmod -R 0777 /tmp/.paddlex && \
+RUN mkdir -p /tmp/.docling /tmp/.cache/huggingface && \
+    chmod -R 0777 /tmp/.docling /tmp/.cache /tmp && \
     if [ "$PRECACHE_MODELS" = "1" ]; then \
-      python -c "import os; os.environ['OCR_LANGUAGE']='${OCR_LANGUAGE}'; \
-from app.ocr_service import get_pipeline; get_pipeline(); print('models cached')"; \
+      python -c "from docling.utils.model_downloader import download_models; download_models(); print('docling models cached')" \
+        || echo "WARN: precache failed; first boot will download models"; \
     else echo "skipping model pre-cache (PRECACHE_MODELS=0)"; fi && \
-    chmod -R 0777 /tmp/.paddlex
+    chmod -R 0777 /tmp/.docling /tmp/.cache /tmp
 
-# Make app dirs writable for non-root runtime users (OVH AI uses UID 42420)
+# Make app dirs writable for non-root runtime users (OVH AI uses UID 42420).
 RUN chmod -R 0777 /srv /var/log /var/lib/redis /var/run || true
 
 EXPOSE 8080

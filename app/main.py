@@ -1,4 +1,4 @@
-"""FastAPI service: images/PDFs → HillMetrics markdown (PaddleOCR-VL-1.5)."""
+"""FastAPI service: images/PDFs → HillMetrics markdown (Docling backend)."""
 from __future__ import annotations
 
 import json
@@ -39,7 +39,7 @@ def _load_default_settings() -> dict[str, Any]:
 
 _DEFAULT_SETTINGS = _load_default_settings()
 
-app = FastAPI(title="PaddleOCR-VL-1.5 → HillMetrics Markdown", version="0.3.0")
+app = FastAPI(title="Docling → HillMetrics Markdown", version="0.4.0-docling")
 
 
 def _merge_settings(override: str | None) -> dict[str, Any]:
@@ -84,13 +84,13 @@ def config() -> JSONResponse:
 
 @app.get("/debug/worker", tags=["diagnostics"], dependencies=[Depends(require_api_key)])
 def debug_worker() -> JSONResponse:
-    """The worker's view of paddle (separate process from the API).
+    """The worker's view of torch/CUDA (separate process from the API).
 
     Inference runs in the worker — this is the source of truth for whether
-    paddle is bound to GPU. The API process imports paddle independently
-    and doesn't load the pipeline, so /debug/env reports its own (cpu)
-    state which is misleading. The worker publishes this snapshot to
-    Redis after pipeline warmup.
+    Docling is using the GPU. The API process imports torch independently
+    and doesn't load the pipeline, so /debug/env reports its own state
+    which can be misleading. The worker publishes this snapshot to Redis
+    after pipeline warmup.
     """
     raw = ocr_jobs.get_redis().get("worker:diagnostics")
     if not raw:
@@ -148,29 +148,38 @@ def debug_gpu() -> JSONResponse:
 
 @app.get("/debug/env", tags=["diagnostics"])
 def debug_env() -> JSONResponse:
-    """Runtime diagnostics: paddle version, CUDA availability, GPU info, key env vars.
-    Does NOT expose secret values — OCR_API_KEY is shown only as set/unset."""
-    import subprocess, sys
-    info: dict[str, Any] = {}
+    """API-process runtime diagnostics: torch/docling versions, CUDA wiring,
+    key env vars. The API doesn't load the heavy converter — see
+    /debug/worker for the *worker* process's CUDA + GPU memory state."""
+    import subprocess
+    import sys
+    info: dict[str, Any] = {"backend": "docling"}
     try:
-        import paddle
-        info["paddle_version"] = paddle.__version__
-        info["compiled_with_cuda"] = paddle.is_compiled_with_cuda()
-        info["gpu_device_count"] = paddle.device.cuda.device_count()
-        if paddle.device.cuda.device_count() > 0:
-            info["gpu_name"] = paddle.device.cuda.get_device_name(0)
+        import torch
+        info["torch_version"] = torch.__version__
+        info["cuda_available"] = torch.cuda.is_available()
+        if torch.cuda.is_available():
+            info["gpu_device_count"] = torch.cuda.device_count()
+            info["gpu_name"] = torch.cuda.get_device_name(0)
     except Exception as e:
-        info["paddle_error"] = str(e)
+        info["torch_error"] = str(e)
     try:
-        smi = subprocess.run(["nvidia-smi", "--query-gpu=name,driver_version,memory.total",
-                              "--format=csv,noheader"], capture_output=True, text=True, timeout=5)
+        import docling
+        info["docling_version"] = getattr(docling, "__version__", "unknown")
+    except Exception as e:
+        info["docling_error"] = str(e)
+    try:
+        smi = subprocess.run(
+            ["nvidia-smi", "--query-gpu=name,driver_version,memory.total", "--format=csv,noheader"],
+            capture_output=True, text=True, timeout=5,
+        )
         info["nvidia_smi"] = smi.stdout.strip() or smi.stderr.strip()
     except Exception as e:
         info["nvidia_smi"] = str(e)
     info["python"] = sys.version
     info["ocr_api_key_set"] = bool(API_KEY)
     info["ocr_language"] = os.environ.get("OCR_LANGUAGE", "")
-    info["paddle_pdx_cache_home"] = os.environ.get("PADDLE_PDX_CACHE_HOME", "")
+    info["docling_artifacts_path"] = os.environ.get("DOCLING_ARTIFACTS_PATH", "")
     info["omp_num_threads"] = os.environ.get("OMP_NUM_THREADS", "")
     info["home"] = os.environ.get("HOME", "")
     return JSONResponse(info)

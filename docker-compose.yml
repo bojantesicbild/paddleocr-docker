@@ -8,22 +8,17 @@ services:
     ports:
       - "${HOST_PORT:-8090}:8080"
     environment:
-      # PaddleOCR language code. "ch" is multilingual (CJK + Latin).
       OCR_LANGUAGE: "${OCR_LANGUAGE:-ch}"
       OCR_JOB_TIMEOUT: "${OCR_JOB_TIMEOUT:-1800}"
       OCR_RESULT_TTL: "${OCR_RESULT_TTL:-86400}"
       # When set, API requires X-API-Key header on /ocr/* and /jobs/*.
       OCR_API_KEY: "${OCR_API_KEY:-}"
-      # Optional: offload VL generation to a remote vllm-/sglang-/fastdeploy-
-      # server (typically on a CC≥8.0 GPU). Leave unset for local inference.
-      VL_REMOTE_URL: "${VL_REMOTE_URL:-}"
-      VL_REMOTE_BACKEND: "${VL_REMOTE_BACKEND:-vllm-server}"
-      VL_REMOTE_API_KEY: "${VL_REMOTE_API_KEY:-}"
     restart: unless-stopped
     volumes:
-      # Persist downloaded model weights so rebuilds don't re-download ~4 GB.
-      # Path matches PADDLE_PDX_CACHE_HOME set in both Dockerfiles.
-      - paddle-models:/tmp/.paddlex
+      # Persist downloaded Docling models so rebuilds don't re-download.
+      # Path matches DOCLING_ARTIFACTS_PATH + HF_HOME parents in the Dockerfiles.
+      - docling-models:/tmp/.docling
+      - hf-cache:/tmp/.cache/huggingface
     healthcheck:
       test: ["CMD", "curl", "-fsS", "http://localhost:8080/health"]
       interval: 30s
@@ -32,4 +27,5 @@ services:
       retries: 10
 
 volumes:
-  paddle-models:
+  docling-models:
+  hf-cache:

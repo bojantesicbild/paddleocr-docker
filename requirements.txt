@@ -1,18 +1,17 @@
-# Core OCR (versions match the existing venv in /Users/bojantesic/git-tests/paddle-ocr-viewer/venv)
-# paddlepaddle / paddlepaddle-gpu is installed separately in the Dockerfile
-# because the package name + index URL differ between CPU and GPU builds.
-paddleocr==3.4.0
-paddlex[ocr]==3.4.2
+# Core OCR: Docling (IBM). Brings its own torch + transformers + layout/table
+# models. No paddle on this branch.
+docling>=2.20,<3
 
-# PDF → image and image I/O (used by app/pdf_split.py and app/ocr_service.py)
+# PDF → image and image I/O. Docling can ingest PDFs directly, but we keep
+# PyMuPDF to render per-page PNGs so the per-page output contract (region
+# prefixes) matches the existing API.
 PyMuPDF==1.27.1
 pillow==12.1.0
 
 # HTML table → GFM conversion (app/markdown_format.py)
 markdownify>=0.11
 
-# Post-OCR language detection — PaddleOCR itself only has a recognition-model
-# "lang" selector, not a detector.
+# Post-OCR language detection
 langdetect>=1.0.9,<2
 
 # HTTP layer
@@ -25,3 +24,6 @@ jinja2>=3.1,<4
 # Queue
 redis>=5.0,<6
 rq>=1.16,<2
+
+# BeautifulSoup (for any HTML table cleanup left in markdown_format.py)
+beautifulsoup4>=4.12

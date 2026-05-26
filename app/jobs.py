@@ -13,7 +13,7 @@ from typing import Any
 from redis import Redis
 from rq import Queue
 
-from . import markdown_format  # cheap; no paddle
+from . import markdown_format  # cheap; no heavy backend imports
 
 # Seed langdetect's internal RNG for reproducible results across calls.
 from langdetect import DetectorFactory, LangDetectException, detect_langs
@@ -21,7 +21,7 @@ from langdetect import DetectorFactory, LangDetectException, detect_langs
 DetectorFactory.seed = 0
 
 # ocr_service and pdf_split are imported lazily inside the job functions so
-# the API process never loads paddle (only the worker does).
+# the API process never loads torch / docling (only the worker does).
 
 REDIS_URL = os.environ.get("REDIS_URL", "redis://127.0.0.1:6379/0")
 QUEUE_NAME = "ocr"
@@ -103,9 +103,9 @@ def run_ocr_image(image_bytes: bytes, settings: dict[str, Any], page_number: int
         "markdown": payload["markdown"],
         "images": payload["images"],
         "metadata": {
-            "library": "paddleocr",
-            "model": "PaddleOCR-VL-1.5",
-            "version": "3.4.0",
+            "library": "docling",
+            "model": "Docling",
+            "version": "2",
             "language": os.environ.get("OCR_LANGUAGE", "ch"),
             "detected_language": _detect_language(payload["markdown"]),
             "page_count": 1,
@@ -135,9 +135,9 @@ def run_ocr_pdf(pdf_bytes: bytes, settings: dict[str, Any], dpi: int) -> dict[st
         "markdown": full_markdown,
         "images": all_images,
         "metadata": {
-            "library": "paddleocr",
-            "model": "PaddleOCR-VL-1.5",
-            "version": "3.4.0",
+            "library": "docling",
+            "model": "Docling",
+            "version": "2",
             "language": os.environ.get("OCR_LANGUAGE", "ch"),
             "detected_language": _detect_language(full_markdown),
             "page_count": total_pages,
