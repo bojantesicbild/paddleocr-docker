@@ -85,6 +85,13 @@ def _build_converter(settings: dict[str, Any] | None = None):
     ocr_langs = s.get("ocr_languages") or ["en", "fr"]
     opts.ocr_options = EasyOcrOptions(lang=ocr_langs)
 
+    # Device override for local testing on Apple Silicon (MPS doesn't
+    # support float64 ops used by some docling stages). On OVH/CUDA leave
+    # unset so docling auto-selects gpu:0.
+    device = os.environ.get("DOCLING_DEVICE", "").strip()
+    if device:
+        opts.accelerator_options.device = device
+
     return DocumentConverter(
         format_options={
             InputFormat.PDF: PdfFormatOption(pipeline_options=opts),

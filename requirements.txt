@@ -1,6 +1,11 @@
 # Core OCR: Docling (IBM). Brings its own torch + transformers + layout/table
-# models. No paddle on this branch.
+# models.
 docling>=2.20,<3
+# EasyOCR is optional from docling's POV but we force-select it in
+# ocr_service.py (RapidOCR — docling's auto-pick for non-English — writes
+# its model cache into site-packages, which OVH's non-root runtime can't
+# write to).
+easyocr>=1.7
 
 # PDF → image and image I/O. Docling can ingest PDFs directly, but we keep
 # PyMuPDF to render per-page PNGs so the per-page output contract (region

@@ -29,3 +29,6 @@ wheels/
 
 ## Docker local state
 *.log
+
+## Jira time-log notes (local only)
+Jira/
