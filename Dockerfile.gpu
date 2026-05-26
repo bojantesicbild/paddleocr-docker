@@ -46,12 +46,20 @@ ENV PIP_DISABLE_PIP_VERSION_CHECK=1 \
     OCR_LANGUAGE=ch \
     OMP_NUM_THREADS=4 \
     HF_HOME=/tmp/.cache/huggingface \
+    TORCHDYNAMO_DISABLE=1 \
     DEBIAN_FRONTEND=noninteractive
 # Note: DOCLING_ARTIFACTS_PATH intentionally NOT set. With it set,
 # docling treats that path as authoritative — if a model isn't pre-baked
 # there it raises "model not found in artifacts_path" instead of falling
 # back to HuggingFace auto-download. Unset lets docling pull models on
 # first use into HF_HOME (which is persisted via the volume mount).
+#
+# TORCHDYNAMO_DISABLE=1: docling's picture classifier triggers torch.compile
+# (inductor → triton → needs a C compiler at runtime). The runtime image
+# is built off cuda-runtime which ships no gcc, so compilation crashes
+# with "Failed to find C compiler" the first time the classifier sees a
+# chart. Disabling dynamo makes the model run eager-mode (slightly slower
+# but reliable). Alternative would be installing build-essential, ~70 MB.
 
 # Optional API key baked at build time (passed via --build-arg from CI secret).
 ARG OCR_API_KEY=""
