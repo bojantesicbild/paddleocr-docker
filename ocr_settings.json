@@ -9,5 +9,5 @@
   "ocr_languages": ["de", "fr", "en"],
   "ocr_confidence_threshold": 0.3,
   "picture_description_repo_id": "HuggingFaceTB/SmolVLM-256M-Instruct",
-  "picture_description_prompt": "Describe this image in a few sentences."
+  "picture_description_prompt": "Describe this chart or image, including axis labels, units, time periods, and the main values or categories shown."
 }

@@ -26,10 +26,34 @@ from typing import Any
 
 from PIL import Image
 
-_converter = None
+# Cache of DocumentConverters keyed by a hash of the build-affecting
+# settings. The first build per key downloads models + warms torch; later
+# requests with the same effective settings reuse the cached converter.
+# Capped at 3 entries — a 4th distinct setting combination evicts the
+# least-recently-used. Bumping higher costs ~600-800 MB of RAM each.
+_CONVERTER_CACHE_MAX = 3
+_converter_cache: "collections.OrderedDict[str, Any]" = None  # type: ignore[assignment]
 _converter_lock = threading.Lock()
 
 _SETTINGS_PATH = Path(__file__).resolve().parent.parent / "ocr_settings.json"
+
+# Settings keys that affect how the DocumentConverter is built. Toggling
+# any of these requires a rebuild (loads/unloads pipeline stages, swaps
+# OCR model, changes batch sizes, etc.). Anything not listed here is a
+# no-op at convert-time because docling reads it during build.
+_BUILD_AFFECTING_KEYS = (
+    "do_ocr",
+    "do_table_structure",
+    "do_picture_classification",
+    "do_picture_description",
+    "do_chart_extraction",
+    "generate_table_images",
+    "images_scale",
+    "ocr_languages",
+    "ocr_confidence_threshold",
+    "picture_description_repo_id",
+    "picture_description_prompt",
+)
 
 # Map Docling DocItemLabel values → the lowercase labels we emit in
 # <image label="..."> tags. Keeps the markdown contract stable across
@@ -165,14 +189,52 @@ def _build_converter(settings: dict[str, Any] | None = None):
     )
 
 
-def get_converter():
-    """Singleton DocumentConverter built from startup settings only."""
-    global _converter
-    if _converter is None:
-        with _converter_lock:
-            if _converter is None:
-                _converter = _build_converter(None)
-    return _converter
+def _effective_settings(settings: dict[str, Any] | None) -> dict[str, Any]:
+    """Merge startup defaults with per-request overrides, then project to
+    the keys that drive converter construction. The result is what
+    everything downstream uses for cache key + build."""
+    merged = dict(_load_startup_settings())
+    if settings:
+        merged.update(settings)
+    return {k: merged.get(k) for k in _BUILD_AFFECTING_KEYS}
+
+
+def _cache_key(eff_settings: dict[str, Any]) -> str:
+    """Stable cache key. JSON with sorted keys handles dicts/lists; we
+    don't worry about float NaN because we only ever store JSON-safe vals
+    here."""
+    return json.dumps(eff_settings, sort_keys=True, default=str)
+
+
+def get_converter(settings: dict[str, Any] | None = None):
+    """Return a DocumentConverter matching the given per-request settings.
+
+    Builds a converter the first time a particular settings combination
+    is seen and caches up to _CONVERTER_CACHE_MAX of them (LRU eviction).
+    Without this, per-request UI toggles like do_picture_description=true
+    would be silently ignored because docling reads them at construction
+    time, not per .convert() call."""
+    import collections
+
+    global _converter_cache
+    if _converter_cache is None:
+        _converter_cache = collections.OrderedDict()
+
+    eff = _effective_settings(settings)
+    key = _cache_key(eff)
+
+    with _converter_lock:
+        if key in _converter_cache:
+            _converter_cache.move_to_end(key)
+            return _converter_cache[key]
+        # Build outside the lock would be ideal, but the lock protects
+        # the cache dict — build cost is dominated by HF download which
+        # is already cached on disk after the first call.
+        converter = _build_converter(settings)
+        _converter_cache[key] = converter
+        while len(_converter_cache) > _CONVERTER_CACHE_MAX:
+            _converter_cache.popitem(last=False)
+        return converter
 
 
 def _pil_to_png_bytes(img: Image.Image) -> bytes:
@@ -329,7 +391,7 @@ def extract(image_bytes: bytes, settings: dict[str, Any] | None = None) -> dict[
         img = img.convert("RGB")
     w, h = img.size
 
-    converter = get_converter()
+    converter = get_converter(settings)
 
     with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as f:
         f.write(image_bytes)
@@ -363,7 +425,7 @@ def extract_pdf(pdf_bytes: bytes, settings: dict[str, Any] | None = None) -> dic
     prefixing region_ids per page.
     """
     settings = settings or {}
-    converter = get_converter()
+    converter = get_converter(settings)
 
     with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as f:
         f.write(pdf_bytes)
