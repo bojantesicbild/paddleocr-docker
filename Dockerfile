@@ -34,8 +34,8 @@ ENV PIP_DISABLE_PIP_VERSION_CHECK=1 \
     HOME=/tmp \
     OCR_LANGUAGE=ch \
     OMP_NUM_THREADS=4 \
-    DOCLING_ARTIFACTS_PATH=/tmp/.docling \
     HF_HOME=/tmp/.cache/huggingface
+# Note: DOCLING_ARTIFACTS_PATH intentionally NOT set — see Dockerfile.gpu.
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
         libgl1 \

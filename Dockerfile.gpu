@@ -45,9 +45,13 @@ ENV PIP_DISABLE_PIP_VERSION_CHECK=1 \
     HOME=/tmp \
     OCR_LANGUAGE=ch \
     OMP_NUM_THREADS=4 \
-    DOCLING_ARTIFACTS_PATH=/tmp/.docling \
     HF_HOME=/tmp/.cache/huggingface \
     DEBIAN_FRONTEND=noninteractive
+# Note: DOCLING_ARTIFACTS_PATH intentionally NOT set. With it set,
+# docling treats that path as authoritative — if a model isn't pre-baked
+# there it raises "model not found in artifacts_path" instead of falling
+# back to HuggingFace auto-download. Unset lets docling pull models on
+# first use into HF_HOME (which is persisted via the volume mount).
 
 # Optional API key baked at build time (passed via --build-arg from CI secret).
 ARG OCR_API_KEY=""

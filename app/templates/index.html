@@ -2,7 +2,7 @@
 <html>
 <head>
 <meta charset="utf-8">
-<title>PaddleOCR-VL-1.5 — HillMetrics</title>
+<title>Docling — HillMetrics</title>
 <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/dompurify@3.0.8/dist/purify.min.js"></script>
 <style>
@@ -94,7 +94,7 @@
 </style>
 </head>
 <body>
-<h1>PaddleOCR-VL-1.5 → HillMetrics Markdown</h1>
+<h1>Docling → HillMetrics Markdown</h1>
 <div class="sub">Upload an image or PDF. Jobs run in the background. <a href="/docs">Swagger</a> · <a href="/health">/health</a></div>
 
 <div class="card" id="auth-card" style="display:none; margin-bottom: 1rem;">
@@ -122,36 +122,18 @@
         <input type="number" id="dpi" value="200" min="72" max="600">
       </div>
       <div>
-        <label>max_pixels (speed knob — empty = default)</label>
-        <input type="number" id="max_pixels" placeholder="e.g. 1228800 (1280×960)" min="0">
-      </div>
-      <div>
-        <label>max_new_tokens (per-block cap)</label>
-        <input type="number" id="max_new_tokens" placeholder="e.g. 1024" min="0">
+        <label>images_scale (Docling crop resolution)</label>
+        <input type="number" id="images_scale" value="2" step="0.5" min="1" max="4">
       </div>
     </div>
 
     <div class="opts-group">
-      <div class="opts-title">Extraction features</div>
+      <div class="opts-title">Docling pipeline</div>
       <div class="opts">
-        <label><input type="checkbox" id="opt_chart"> chart recognition</label>
-        <label><input type="checkbox" id="opt_seal"> seal recognition</label>
-        <label><input type="checkbox" id="opt_orient"> doc orientation</label>
-        <label><input type="checkbox" id="opt_unwarp"> doc unwarping</label>
-        <label><input type="checkbox" id="opt_imgocr"> OCR for image blocks</label>
-      </div>
-    </div>
-
-    <div class="opts-group">
-      <div class="opts-title">Include content blocks <span class="hint">(off = filtered out of markdown)</span></div>
-      <div class="opts">
-        <label><input type="checkbox" id="inc_header"> header</label>
-        <label><input type="checkbox" id="inc_header_image"> header image</label>
-        <label><input type="checkbox" id="inc_footer"> footer</label>
-        <label><input type="checkbox" id="inc_footer_image"> footer image</label>
-        <label><input type="checkbox" id="inc_page_number"> page number</label>
-        <label><input type="checkbox" id="inc_footnote"> footnote</label>
-        <label><input type="checkbox" id="inc_aside_text"> aside text</label>
+        <label><input type="checkbox" id="opt_ocr" checked> OCR (read text in images)</label>
+        <label><input type="checkbox" id="opt_table" checked> Table structure</label>
+        <label><input type="checkbox" id="opt_picclass" checked> Picture classification <span class="hint">(BAR_CHART / LINE_CHART / LOGO / …)</span></label>
+        <label><input type="checkbox" id="opt_picdesc"> Picture description <span class="hint">(slow — runs a VLM caption per image)</span></label>
       </div>
     </div>
 
@@ -232,19 +214,15 @@ function setStatus(text, cls='', live=true) {
 // --- build settings JSON from checkboxes ---
 function buildSettings() {
   const s = {};
-  if ($('#opt_chart').checked) s.chart_recognition = true;
-  if ($('#opt_seal').checked) s.use_seal_recognition = true;
-  if ($('#opt_orient').checked) s.use_doc_orientation_classify = true;
-  if ($('#opt_unwarp').checked) s.use_doc_unwarping = true;
-  if ($('#opt_imgocr').checked) s.use_ocr_for_image_block = true;
-  for (const key of ['header','header_image','footer','footer_image','page_number','footnote','aside_text']) {
-    if ($(`#inc_${key}`).checked) s[`include_${key}`] = true;
-  }
-  const mp = parseInt($('#max_pixels').value, 10);
-  if (mp > 0) s.max_pixels = mp;
-  const mnt = parseInt($('#max_new_tokens').value, 10);
-  if (mnt > 0) s.max_new_tokens = mnt;
-  return Object.keys(s).length ? JSON.stringify(s) : null;
+  // Docling pipeline toggles — defaults match Dockerfile defaults so we
+  // only include them when the user explicitly overrides.
+  s.do_ocr = $('#opt_ocr').checked;
+  s.do_table_structure = $('#opt_table').checked;
+  s.do_picture_classification = $('#opt_picclass').checked;
+  s.do_picture_description = $('#opt_picdesc').checked;
+  const scale = parseFloat($('#images_scale').value);
+  if (scale > 0) s.images_scale = scale;
+  return JSON.stringify(s);
 }
 
 // --- polling ---

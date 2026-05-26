@@ -52,41 +52,46 @@ def _load_startup_settings() -> dict[str, Any]:
         return {}
 
 
+def _build_converter(settings: dict[str, Any] | None = None):
+    """Build a DocumentConverter with the given pipeline settings.
+
+    Heavy: loads layout + table + picture classifier models (~600-800 MB)
+    via huggingface_hub on first call per setting combination.
+    """
+    from docling.datamodel.base_models import InputFormat
+    from docling.datamodel.pipeline_options import PdfPipelineOptions
+    from docling.document_converter import DocumentConverter, PdfFormatOption
+
+    s = dict(_load_startup_settings())
+    if settings:
+        s.update(settings)
+
+    opts = PdfPipelineOptions()
+    opts.do_ocr = bool(s.get("do_ocr", True))
+    opts.do_table_structure = bool(s.get("do_table_structure", True))
+    # Picture-level enrichment is what gives us BAR_CHART / LINE_CHART /
+    # LOGO / SIGNATURE / etc. on top of the coarse DocItemLabel.
+    opts.do_picture_classification = bool(s.get("do_picture_classification", True))
+    # Optional VLM caption of each picture; expensive — off by default.
+    opts.do_picture_description = bool(s.get("do_picture_description", False))
+    opts.generate_picture_images = True
+    opts.images_scale = float(s.get("images_scale", 2.0))
+
+    return DocumentConverter(
+        format_options={
+            InputFormat.PDF: PdfFormatOption(pipeline_options=opts),
+            InputFormat.IMAGE: PdfFormatOption(pipeline_options=opts),
+        }
+    )
+
+
 def get_converter():
-    """Singleton DocumentConverter. Heavy: loads layout + table + picture
-    classifier models (~600-800 MB)."""
+    """Singleton DocumentConverter built from startup settings only."""
     global _converter
     if _converter is None:
         with _converter_lock:
             if _converter is None:
-                from docling.datamodel.base_models import InputFormat
-                from docling.datamodel.pipeline_options import PdfPipelineOptions
-                from docling.document_converter import DocumentConverter, PdfFormatOption
-
-                s = _load_startup_settings()
-
-                opts = PdfPipelineOptions()
-                opts.do_ocr = True
-                opts.do_table_structure = True
-                # Picture-level enrichment is what gives us BAR_CHART /
-                # LINE_CHART / LOGO / SIGNATURE / etc. labels on top of the
-                # coarse DocItemLabel.
-                opts.do_picture_classification = bool(
-                    s.get("do_picture_classification", True)
-                )
-                # Optional VLM caption of each picture; expensive — off by default.
-                opts.do_picture_description = bool(
-                    s.get("do_picture_description", False)
-                )
-                opts.generate_picture_images = True
-                opts.images_scale = float(s.get("images_scale", 2.0))
-
-                _converter = DocumentConverter(
-                    format_options={
-                        InputFormat.PDF: PdfFormatOption(pipeline_options=opts),
-                        InputFormat.IMAGE: PdfFormatOption(pipeline_options=opts),
-                    }
-                )
+                _converter = _build_converter(None)
     return _converter
 
 
