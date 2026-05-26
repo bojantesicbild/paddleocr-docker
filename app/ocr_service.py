@@ -59,7 +59,7 @@ def _build_converter(settings: dict[str, Any] | None = None):
     via huggingface_hub on first call per setting combination.
     """
     from docling.datamodel.base_models import InputFormat
-    from docling.datamodel.pipeline_options import PdfPipelineOptions
+    from docling.datamodel.pipeline_options import EasyOcrOptions, PdfPipelineOptions
     from docling.document_converter import DocumentConverter, PdfFormatOption
 
     s = dict(_load_startup_settings())
@@ -76,6 +76,14 @@ def _build_converter(settings: dict[str, Any] | None = None):
     opts.do_picture_description = bool(s.get("do_picture_description", False))
     opts.generate_picture_images = True
     opts.images_scale = float(s.get("images_scale", 2.0))
+
+    # Explicitly use EasyOCR. Docling's auto-selection picks RapidOCR for
+    # non-English OCR_LANGUAGE, and RapidOCR writes its model cache into
+    # its own pip site-packages dir — not writable on OVH AI Deploy's
+    # non-root runtime (UID 42420). EasyOCR caches to ~/.EasyOCR which
+    # resolves to /tmp/.EasyOCR via HOME=/tmp.
+    ocr_langs = s.get("ocr_languages") or ["en", "fr"]
+    opts.ocr_options = EasyOcrOptions(lang=ocr_langs)
 
     return DocumentConverter(
         format_options={

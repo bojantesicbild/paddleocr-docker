@@ -3,5 +3,6 @@
   "do_table_structure": true,
   "do_picture_classification": true,
   "do_picture_description": false,
-  "images_scale": 2.0
+  "images_scale": 2.0,
+  "ocr_languages": ["en", "fr"]
 }
