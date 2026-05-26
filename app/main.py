@@ -70,8 +70,11 @@ async def _wait_for_job(job: Job, timeout_s: int = 1800) -> dict[str, Any]:
         if status == JobStatus.FINISHED:
             return job.result
         if status == JobStatus.FAILED:
-            tail = (job.exc_info or "").splitlines()[-1] if job.exc_info else "job failed"
-            raise HTTPException(status_code=500, detail=tail)
+            # Full traceback (not just last line) so V100/CUDA failures inside
+            # docling stages don't get truncated to "RuntimeError: Pipeline
+            # ... failed". OVH's /log API only surfaces app state, not stdout,
+            # so /jobs/{id} is our only window into the worker stack.
+            raise HTTPException(status_code=500, detail=job.exc_info or "job failed")
         await asyncio.sleep(1)
     raise HTTPException(status_code=504, detail=f"job {job.id} timed out after {timeout_s}s")
 
@@ -267,5 +270,5 @@ def job_status(job_id: str):
     if status == JobStatus.FINISHED:
         payload["result"] = job.result
     elif status == JobStatus.FAILED:
-        payload["error"] = (job.exc_info or "").splitlines()[-1] if job.exc_info else "job failed"
+        payload["error"] = job.exc_info or "job failed"
     return JSONResponse(payload)
