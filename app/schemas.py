@@ -22,6 +22,10 @@ class OCRMetadata(BaseModel):
     )
     page_count: int
     duration_ms: int
+    confidence: dict[str, Any] | None = Field(
+        default=None,
+        description="Docling ConfidenceReport: parse/layout/table/ocr scores + mean/low + grade. null if pipeline didn't populate it.",
+    )
     settings: dict[str, Any] = Field(default_factory=dict)
 
 
