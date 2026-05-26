@@ -135,7 +135,7 @@
         <label><input type="checkbox" id="opt_picclass" checked> Picture classification <span class="hint">(BAR_CHART / LINE_CHART / LOGO / …)</span></label>
         <label><input type="checkbox" id="opt_tableimg" checked> Table crops <span class="hint">(emit PNG of each detected table)</span></label>
         <label><input type="checkbox" id="opt_picdesc"> Picture description <span class="hint">(SmolVLM-256M caption per image — slow)</span></label>
-        <label><input type="checkbox" id="opt_chartextract"> Chart extraction <span class="hint">(Granite-Vision chart2csv — very slow)</span></label>
+        <label><input type="checkbox" id="opt_chart2table"> Chart → table <span class="hint">(DePlot extracts axis labels + values into a GFM table per chart — ~4s/chart on V100)</span></label>
       </div>
     </div>
 
@@ -220,7 +220,7 @@ function buildSettings() {
   s.do_table_structure = $('#opt_table').checked;
   s.do_picture_classification = $('#opt_picclass').checked;
   s.do_picture_description = $('#opt_picdesc').checked;
-  s.do_chart_extraction = $('#opt_chartextract').checked;
+  s.do_chart_to_table = $('#opt_chart2table').checked;
   s.generate_table_images = $('#opt_tableimg').checked;
   const scale = parseFloat($('#images_scale').value);
   if (scale > 0) s.images_scale = scale;

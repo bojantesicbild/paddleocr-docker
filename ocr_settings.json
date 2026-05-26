@@ -4,6 +4,7 @@
   "do_picture_classification": true,
   "do_picture_description": false,
   "do_chart_extraction": false,
+  "do_chart_to_table": false,
   "generate_table_images": true,
   "images_scale": 2.0,
   "ocr_languages": ["de", "fr", "en"],

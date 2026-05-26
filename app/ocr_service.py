@@ -53,6 +53,11 @@ _BUILD_AFFECTING_KEYS = (
     "ocr_confidence_threshold",
     "picture_description_repo_id",
     "picture_description_prompt",
+    # do_chart_to_table is OURS, not docling's — runs DePlot in a
+    # post-pass. Doesn't change the converter, but keying on it keeps
+    # the conceptual settings model uniform (a request with VLM+DePlot
+    # is distinct from one without).
+    "do_chart_to_table",
 )
 
 # Map Docling DocItemLabel values → the lowercase labels we emit in
@@ -261,11 +266,21 @@ def _picture_sub_label(picture) -> str:
     return _DOC_ITEM_LABEL_MAP.get(coarse_str, coarse_str)
 
 
-def _crops_from_items(pictures, tables) -> tuple[dict[str, dict[str, Any]], dict[int, str]]:
+def _crops_from_items(
+    pictures,
+    tables,
+    chart_tables_by_id: dict[int, dict[str, Any]] | None = None,
+) -> tuple[dict[str, dict[str, Any]], dict[int, str]]:
     """Build crops dict + item_id→region_id map for placeholder rewriting.
     Pictures get their classifier sub-label (BAR_CHART, LOGO, …); tables
     are labeled "table". Region IDs are local to the caller (region_1,
-    region_2, …) and ordered pictures-then-tables."""
+    region_2, …) and ordered pictures-then-tables.
+
+    `chart_tables_by_id` is `id(picture) → {gfm, title, raw}` from the
+    DePlot pre-pass. When present, the matching crop entry gets a
+    `chart_table` field that `_rewrite_picture_tags` will emit beneath
+    the image tag in the markdown."""
+    chart_tables_by_id = chart_tables_by_id or {}
     crops: dict[str, dict[str, Any]] = {}
     item_to_region: dict[int, str] = {}
     idx = 1
@@ -276,10 +291,16 @@ def _crops_from_items(pictures, tables) -> tuple[dict[str, dict[str, Any]], dict
         pil = getattr(img_attr, "pil_image", None) if img_attr is not None else None
         if pil is None:
             continue
-        crops[rid] = {
+        entry: dict[str, Any] = {
             "png": _pil_to_png_bytes(pil),
             "label": _picture_sub_label(picture),
         }
+        chart = chart_tables_by_id.get(id(picture))
+        if chart and chart.get("gfm"):
+            entry["chart_table"] = chart["gfm"]
+            if chart.get("title"):
+                entry["chart_title"] = chart["title"]
+        crops[rid] = entry
         idx += 1
     for table in tables:
         rid = f"region_{idx}"
@@ -335,7 +356,12 @@ def _confidence_to_dict(scores) -> dict[str, Any] | None:
     }
 
 
-def _doc_to_page_result(doc, page_no: int | None = None, page_confidence=None) -> dict[str, Any]:
+def _doc_to_page_result(
+    doc,
+    page_no: int | None = None,
+    page_confidence=None,
+    chart_tables_by_id: dict[int, dict[str, Any]] | None = None,
+) -> dict[str, Any]:
     """Render a single page (or the whole doc if page_no is None) into our
     standard {markdown, crops, width, height, confidence} shape. Both
     pictures and (when generate_table_images is on) tables become crops."""
@@ -351,7 +377,9 @@ def _doc_to_page_result(doc, page_no: int | None = None, page_confidence=None) -
     pics_on_page = _on_page(getattr(doc, "pictures", []) or [])
     tables_on_page = _on_page(getattr(doc, "tables", []) or [])
 
-    crops, item_to_region = _crops_from_items(pics_on_page, tables_on_page)
+    crops, item_to_region = _crops_from_items(
+        pics_on_page, tables_on_page, chart_tables_by_id=chart_tables_by_id,
+    )
 
     try:
         markdown = doc.export_to_markdown(page_no=page_no) if page_no is not None \
@@ -377,6 +405,44 @@ def _doc_to_page_result(doc, page_no: int | None = None, page_confidence=None) -
         "height": h,
         "confidence": _confidence_to_dict(page_confidence),
     }
+
+
+def _maybe_extract_chart_tables(doc, settings: dict[str, Any]) -> dict[int, dict[str, Any]]:
+    """Run DePlot on every picture whose top classification label is a
+    chart kind. Returns id(picture) → {gfm, title, raw}. Empty dict when
+    do_chart_to_table is False or no chart pictures present.
+
+    Lazy import: keeps `app.chart_extract` (and the Pix2Struct dep) out
+    of the API process and unloaded until first opt-in."""
+    if not settings.get("do_chart_to_table"):
+        return {}
+    pictures = getattr(doc, "pictures", []) or []
+    if not pictures:
+        return {}
+
+    chart_pics: dict[int, Image.Image] = {}
+    rid_for_id: dict[int, str] = {}  # for logging only
+    for idx, pic in enumerate(pictures, 1):
+        label = _picture_sub_label(pic)
+        # Local import to avoid circular reference + keep module list slim.
+        from . import chart_extract
+        if label not in chart_extract.CHART_LABELS:
+            continue
+        img_attr = getattr(pic, "image", None)
+        pil = getattr(img_attr, "pil_image", None) if img_attr is not None else None
+        if pil is None:
+            continue
+        chart_pics[id(pic)] = pil
+        rid_for_id[id(pic)] = f"picture_{idx}"
+
+    if not chart_pics:
+        return {}
+
+    # Map id-based keys → labels (chart_extract uses strings as keys).
+    string_keys = {str(k): img for k, img in chart_pics.items()}
+    from . import chart_extract
+    parsed = chart_extract.extract_chart_tables(string_keys)
+    return {int(sk): parsed[sk] for sk in parsed if sk in parsed}
 
 
 def extract(image_bytes: bytes, settings: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -405,9 +471,14 @@ def extract(image_bytes: bytes, settings: dict[str, Any] | None = None) -> dict[
         except OSError:
             pass
 
+    chart_tables = _maybe_extract_chart_tables(doc, settings)
     # Single image = one logical page; docling's ConfidenceReport carries
     # overall scores. Use those directly.
-    out = _doc_to_page_result(doc, page_no=None, page_confidence=getattr(result, "confidence", None))
+    out = _doc_to_page_result(
+        doc, page_no=None,
+        page_confidence=getattr(result, "confidence", None),
+        chart_tables_by_id=chart_tables,
+    )
     # For single images we trust the input PIL dimensions over docling's
     # internal page size (which can be in points, not pixels).
     out["width"] = w
@@ -448,9 +519,14 @@ def extract_pdf(pdf_bytes: bytes, settings: dict[str, Any] | None = None) -> dic
 
     overall = getattr(result, "confidence", None)
     per_page_scores = getattr(overall, "pages", {}) if overall is not None else {}
+    chart_tables = _maybe_extract_chart_tables(doc, settings)
 
     pages = [
-        _doc_to_page_result(doc, page_no=p, page_confidence=per_page_scores.get(p))
+        _doc_to_page_result(
+            doc, page_no=p,
+            page_confidence=per_page_scores.get(p),
+            chart_tables_by_id=chart_tables,
+        )
         for p in range(1, n_pages + 1)
     ]
     return {"pages": pages, "confidence": _confidence_to_dict(overall)}
@@ -491,6 +567,15 @@ def _rewrite_picture_tags(
         if i >= len(region_labels):
             return m.group(0)
         rid, label = region_labels[i]
-        return f'<image label="{label}">[{rid}]</image>'
+        tag = f'<image label="{label}">[{rid}]</image>'
+        # If DePlot produced a table for this chart, append it as GFM
+        # directly under the tag — downstream gets the structured data
+        # adjacent to the image reference.
+        chart = crops[rid].get("chart_table")
+        if chart:
+            title = crops[rid].get("chart_title")
+            header = f"**Chart data — {title}**\n\n" if title else "**Chart data**\n\n"
+            tag = f"{tag}\n\n{header}{chart}"
+        return tag
 
     return placeholder_re.sub(_sub, markdown).strip()
