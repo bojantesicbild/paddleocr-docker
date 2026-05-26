@@ -1,8 +1,12 @@
 name: Redeploy OVH AI app
 
-# Triggers a stop → start of the OVH AI Deploy app so it re-pulls
-# ghcr.io/.../paddleocr-docker:gpu-latest from GHCR. OVH does not auto-pull
-# on tag updates; this workflow closes that loop.
+# Triggers a stop → start of the OVH AI Deploy app so it re-pulls its
+# image from GHCR. OVH does not auto-pull on tag updates; this workflow
+# closes that loop.
+#
+# Optional: provide `image_tag` on workflow_dispatch to first PUT a new
+# spec.image (e.g. switch from gpu-latest to gpu-feat-docling-latest)
+# before the stop/start.
 #
 # Required repo secrets:
 #   OVH_APPLICATION_KEY
@@ -10,33 +14,49 @@ name: Redeploy OVH AI app
 #   OVH_CONSUMER_KEY
 #   OVH_PROJECT_ID  (Public Cloud service name)
 #   OVH_APP_ID      (UUID of the AI Deploy app)
+#
+# Required token rights (regenerate token at https://eu.api.ovh.com/createToken/):
+#   GET  /cloud/project/*/ai/app
+#   GET  /cloud/project/*/ai/app/*
+#   PUT  /cloud/project/*/ai/app/*           ← needed only when image_tag is set
+#   PUT  /cloud/project/*/ai/app/*/start
+#   PUT  /cloud/project/*/ai/app/*/stop
 
 on:
-  # Auto-redeploy after a successful image build.
+  # Auto-redeploy ONLY on successful main-branch image builds. Feature
+  # branches must be deployed manually with workflow_dispatch + image_tag.
   workflow_run:
     workflows: ["Build and push GPU image"]
     types: [completed]
-  # Manual button.
-  workflow_dispatch: {}
+    branches: [main]
+  # Manual button — also lets you swap image tag.
+  workflow_dispatch:
+    inputs:
+      image_tag:
+        description: 'GHCR image tag to deploy (e.g. gpu-feat-docling-latest). Leave empty to redeploy the currently-configured image.'
+        required: false
+        default: ''
 
 jobs:
   redeploy:
     runs-on: ubuntu-latest
-    # Skip auto-redeploy if the upstream image build didn't succeed.
     if: >
       github.event_name == 'workflow_dispatch'
-      || github.event.workflow_run.conclusion == 'success'
+      || (github.event.workflow_run.conclusion == 'success'
+          && github.event.workflow_run.head_branch == 'main')
     steps:
       - name: Install python-ovh
         run: pip install --quiet 'ovh<2'
 
-      - name: Stop, wait, start, wait for healthy
+      - name: Set image (if requested), stop, start, wait for healthy
         env:
           OVH_APPLICATION_KEY: ${{ secrets.OVH_APPLICATION_KEY }}
           OVH_APPLICATION_SECRET: ${{ secrets.OVH_APPLICATION_SECRET }}
           OVH_CONSUMER_KEY: ${{ secrets.OVH_CONSUMER_KEY }}
           PROJECT: ${{ secrets.OVH_PROJECT_ID }}
           APP: ${{ secrets.OVH_APP_ID }}
+          REPO_OWNER: ${{ github.repository_owner }}
+          IMAGE_TAG: ${{ inputs.image_tag }}
         run: |
           python <<'PY'
           import os, sys, time, ovh
@@ -47,8 +67,10 @@ jobs:
               application_secret=os.environ['OVH_APPLICATION_SECRET'],
               consumer_key=os.environ['OVH_CONSUMER_KEY'],
           )
-          PROJECT = os.environ['PROJECT']
-          APP     = os.environ['APP']
+          PROJECT    = os.environ['PROJECT']
+          APP        = os.environ['APP']
+          REPO_OWNER = os.environ['REPO_OWNER']
+          IMAGE_TAG  = (os.environ.get('IMAGE_TAG') or '').strip()
 
           summary = []
 
@@ -78,12 +100,30 @@ jobs:
           info = get_app()
           spec = info.get('spec') or {}
           start_state = state(info)
+          cur_image = spec.get('image', '?')
           print(f'starting state: {start_state}')
-          print(f'image: {spec.get("image", "?")}')
+          print(f'current image: {cur_image}')
           summary.append(f"### Redeploy of `{APP}`")
           summary.append(f"- Starting state: `{start_state}`")
-          summary.append(f"- Image: `{spec.get('image', '?')}`")
+          summary.append(f"- Current image: `{cur_image}`")
 
+          # Step 1 — optionally swap image tag.
+          if IMAGE_TAG:
+              new_image = f'ghcr.io/{REPO_OWNER}/paddleocr-docker:{IMAGE_TAG}'
+              if new_image == cur_image:
+                  print(f'image already {new_image}; skipping PUT')
+                  summary.append(f'- Image unchanged (`{new_image}`)')
+              else:
+                  print(f'updating spec.image → {new_image}')
+                  payload = dict(spec)
+                  payload['image'] = new_image
+                  # OVH PUT replaces the spec; preserve all other fields.
+                  client.put(f'/cloud/project/{PROJECT}/ai/app/{APP}', **payload)
+                  summary.append(f"- ✅ Image updated to `{new_image}`")
+
+          # Step 2 — stop (if running).
+          info = get_app()
+          start_state = state(info)
           if start_state in ('RUNNING', 'STARTING', 'PENDING', 'SCALING'):
               print('stop...')
               client.put(f'/cloud/project/{PROJECT}/ai/app/{APP}/stop')
@@ -93,11 +133,14 @@ jobs:
               print(f'already not running ({start_state}); skipping stop')
               summary.append(f"- (already not running, skipped stop)")
 
+          # Step 3 — start, wait for RUNNING.
           print('start...')
           client.put(f'/cloud/project/{PROJECT}/ai/app/{APP}/start')
           info = wait_for({'RUNNING'}, 'start', timeout_s=900)
           url = (info.get('status') or {}).get('url', '?')
+          final_image = (info.get('spec') or {}).get('image', '?')
           summary.append(f"- ✅ Running at `{url}`")
+          summary.append(f"- Final image: `{final_image}`")
 
           with open(os.environ['GITHUB_STEP_SUMMARY'], 'w') as f:
               f.write("\n".join(summary))
