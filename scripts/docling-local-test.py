@@ -39,30 +39,55 @@ def main() -> int:
     print(f"  imported in {time.time() - t0:.1f}s")
 
     print(f"reading {img_path} ({img_path.stat().st_size // 1024} KB)")
-    img_bytes = img_path.read_bytes()
+    file_bytes = img_path.read_bytes()
+    is_pdf = img_path.suffix.lower() == ".pdf"
 
-    print("first inference (cold) — this downloads models + warms up...")
-    t0 = time.time()
-    result = extract(img_bytes, {})
-    cold = time.time() - t0
-    print(f"  cold run: {cold:.1f}s")
+    if is_pdf:
+        from app.ocr_service import extract_pdf
+        print("first PDF inference (cold) — downloads models + warms up...")
+        t0 = time.time()
+        page_results = extract_pdf(file_bytes, {})
+        cold = time.time() - t0
+        print(f"  cold run: {cold:.1f}s over {len(page_results)} page(s) "
+              f"= {cold / max(1, len(page_results)):.1f}s/page")
 
-    print("second inference (warm)...")
-    t0 = time.time()
-    result = extract(img_bytes, {})
-    warm = time.time() - t0
-    print(f"  warm run: {warm:.1f}s")
+        print("second PDF inference (warm)...")
+        t0 = time.time()
+        page_results = extract_pdf(file_bytes, {})
+        warm = time.time() - t0
+        print(f"  warm run: {warm:.1f}s over {len(page_results)} page(s) "
+              f"= {warm / max(1, len(page_results)):.1f}s/page")
 
-    md = result.get("markdown", "")
-    crops = result.get("crops", {})
+        md = "\n\n".join(r.get("markdown", "") for r in page_results)
+        crops = {}
+        for page_idx, r in enumerate(page_results, start=1):
+            for rid, c in r.get("crops", {}).items():
+                crops[f"p{page_idx}_{rid}"] = c
+        page_count = len(page_results)
+    else:
+        print("first inference (cold) — this downloads models + warms up...")
+        t0 = time.time()
+        result = extract(file_bytes, {})
+        cold = time.time() - t0
+        print(f"  cold run: {cold:.1f}s")
+
+        print("second inference (warm)...")
+        t0 = time.time()
+        result = extract(file_bytes, {})
+        warm = time.time() - t0
+        print(f"  warm run: {warm:.1f}s")
+
+        md = result.get("markdown", "")
+        crops = result.get("crops", {})
+        page_count = 1
 
     print("=" * 60)
+    print(f"pages:     {page_count}")
     print(f"markdown:  {len(md)} chars, {md.count(chr(10)) + 1} lines")
     print(f"crops:     {len(crops)} regions")
-    for rid, c in sorted(crops.items(), key=lambda kv: int(kv[0].split('_')[1])):
+    for rid, c in crops.items():
         size_kib = len(c.get("png", b"")) // 1024
-        print(f"  {rid:12s}  label={c.get('label', '?'):20s}  {size_kib} KB")
-    print(f"width/height: {result.get('width')} x {result.get('height')}")
+        print(f"  {rid:18s}  label={c.get('label', '?'):20s}  {size_kib} KB")
     print("=" * 60)
     print("markdown (first 2000 chars):")
     print("-" * 60)

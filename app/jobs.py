@@ -116,16 +116,20 @@ def run_ocr_image(image_bytes: bytes, settings: dict[str, Any], page_number: int
 
 
 def run_ocr_pdf(pdf_bytes: bytes, settings: dict[str, Any], dpi: int) -> dict[str, Any]:
+    """Hand the whole PDF to docling so editable text layers are used
+    without per-page OCR. `dpi` kept in the signature for API stability
+    but no longer drives anything (docling rasterizes internally only
+    where needed)."""
     import time
-    from . import ocr_service, pdf_split
+    from . import ocr_service
     t0 = time.monotonic()
-    total_pages = pdf_split.page_count(pdf_bytes)
+
+    page_results = ocr_service.extract_pdf(pdf_bytes, settings)
+    total_pages = len(page_results)
 
     all_markdown: list[str] = []
     all_images: list[dict[str, Any]] = []
-
-    for page_idx, page_png in enumerate(pdf_split.split_pdf(pdf_bytes, dpi=dpi), start=1):
-        res = ocr_service.extract(page_png, settings)
+    for page_idx, res in enumerate(page_results, start=1):
         payload = _page_to_payload(res, page_idx, region_prefix=f"p{page_idx}_")
         all_markdown.append(payload["markdown"])
         all_images.extend(payload["images"])
