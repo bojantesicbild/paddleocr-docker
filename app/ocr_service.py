@@ -578,4 +578,55 @@ def _rewrite_picture_tags(
             tag = f"{tag}\n\n{header}{chart}"
         return tag
 
-    return placeholder_re.sub(_sub, markdown).strip()
+    out = placeholder_re.sub(_sub, markdown).strip()
+    return _strip_label_captions(out, crops)
+
+
+def _strip_label_captions(markdown: str, crops: dict[str, dict[str, Any]]) -> str:
+    """Remove docling's standalone-caption paragraphs that duplicate the
+    label already encoded in the `<image label="...">` tag.
+
+    Docling's `export_to_markdown` emits the picture classifier label as
+    a separate paragraph right after the picture placeholder (e.g.
+    "Bar chart", "Logo", "Table"). We've already replaced the placeholder
+    with our `<image label="bar_chart">…</image>` form, so that trailing
+    caption is pure visual noise. Strip it.
+
+    Algorithm: walk paragraphs. After seeing an `<image>` tag (and through
+    any subsequent Chart-data block we ourselves inserted), the *next*
+    paragraph whose text equals one of the known captions gets dropped.
+    """
+    if not crops:
+        return markdown
+
+    # Docling builds the caption as label.replace("_"," ").capitalize().
+    # We mirror that, with a few common variants for safety.
+    captions: set[str] = set()
+    for crop in crops.values():
+        label = crop.get("label") or ""
+        if not label:
+            continue
+        canon = label.replace("_", " ")
+        captions.add(canon.capitalize())
+        captions.add(canon.title())
+
+    if not captions:
+        return markdown
+
+    paras = markdown.split("\n\n")
+    out: list[str] = []
+    after_image = False
+    for p in paras:
+        stripped = p.strip()
+        if after_image and stripped in captions:
+            after_image = False
+            continue
+        out.append(p)
+        if "<image label=" in stripped:
+            after_image = True
+        elif after_image and (stripped.startswith("**Chart data") or stripped.startswith("|")):
+            # Stay inside the "skip-caption" window across the DePlot block.
+            pass
+        else:
+            after_image = False
+    return "\n\n".join(out)

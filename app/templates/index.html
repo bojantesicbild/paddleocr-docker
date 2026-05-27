@@ -259,7 +259,11 @@ function render(result) {
   lastMarkdown = md;
 
   const imgByRegion = Object.fromEntries(imgs.map(im => [im.region_id, im]));
-  const mdForRender = md.replace(/<image(?:\s[^>]*)?>\[(region_[\w]+)\]<\/image>/g, (m, rid) => {
+  // PDF region IDs are page-prefixed (`p1_region_3`); single-image uploads
+  // stay bare (`region_3`). Accept either by allowing the full bracket
+  // body to be any \w+. Unmatched tags get stripped by DOMPurify and the
+  // [region_X] text leaks into the view — the symptom this fixes.
+  const mdForRender = md.replace(/<image(?:\s[^>]*)?>\[(\w+)\]<\/image>/g, (m, rid) => {
     const im = imgByRegion[rid];
     if (!im) return m;
     const alt = `${im.label || 'image'}: ${rid}`;
