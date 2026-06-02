@@ -1,0 +1,115 @@
+name: OVH app power (stop / start)
+
+# Manually stop or start the OVH AI Deploy app to control GPU billing.
+# A STOPPED app does not bill for GPU. Use this to park the app when it's
+# idle, and start it again when you need it.
+#
+# This is intentionally separate from "Redeploy OVH AI app": redeploy does a
+# stop→start to re-pull the image, whereas this lets you stop-and-stay-stopped
+# (or do a lightweight start without re-pulling).
+#
+# Required repo secrets (same as the redeploy workflow):
+#   OVH_APPLICATION_KEY, OVH_APPLICATION_SECRET, OVH_CONSUMER_KEY,
+#   OVH_PROJECT_ID, OVH_APP_ID
+#
+# Required token rights (https://eu.api.ovh.com/createToken/):
+#   GET  /cloud/project/*/ai/app/*
+#   PUT  /cloud/project/*/ai/app/*/start
+#   PUT  /cloud/project/*/ai/app/*/stop
+
+on:
+  workflow_dispatch:
+    inputs:
+      action:
+        description: 'What to do with the OVH app'
+        required: true
+        type: choice
+        default: stop
+        options:
+          - stop
+          - start
+
+jobs:
+  power:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Install python-ovh
+        run: pip install --quiet 'ovh<2'
+
+      - name: ${{ inputs.action }} the OVH app
+        env:
+          OVH_APPLICATION_KEY: ${{ secrets.OVH_APPLICATION_KEY }}
+          OVH_APPLICATION_SECRET: ${{ secrets.OVH_APPLICATION_SECRET }}
+          OVH_CONSUMER_KEY: ${{ secrets.OVH_CONSUMER_KEY }}
+          PROJECT: ${{ secrets.OVH_PROJECT_ID }}
+          APP: ${{ secrets.OVH_APP_ID }}
+          ACTION: ${{ inputs.action }}
+        run: |
+          python <<'PY'
+          import os, sys, time, ovh
+
+          client = ovh.Client(
+              endpoint='ovh-eu',
+              application_key=os.environ['OVH_APPLICATION_KEY'],
+              application_secret=os.environ['OVH_APPLICATION_SECRET'],
+              consumer_key=os.environ['OVH_CONSUMER_KEY'],
+          )
+          PROJECT = os.environ['PROJECT']
+          APP     = os.environ['APP']
+          ACTION  = os.environ['ACTION'].strip()
+
+          def get_app():
+              return client.get(f'/cloud/project/{PROJECT}/ai/app/{APP}')
+
+          def state(info):
+              return (info.get('status') or {}).get('state', 'UNKNOWN')
+
+          def wait_for(target_states, label, timeout_s):
+              deadline = time.time() + timeout_s
+              last = None
+              while time.time() < deadline:
+                  s = state(get_app())
+                  if s != last:
+                      print(f'  state={s}')
+                      last = s
+                  if s in target_states:
+                      return last
+                  if s in ('FAILED', 'ERROR', 'CRASHED'):
+                      sys.exit(f'app entered {s} during {label}')
+                  time.sleep(10)
+              sys.exit(f'timed out after {timeout_s}s waiting for {label} (last state={last})')
+
+          info = get_app()
+          start_state = state(info)
+          name = (info.get('spec') or {}).get('name', APP)
+          print(f'app: {name}')
+          print(f'starting state: {start_state}')
+
+          summary = [f"### OVH app `{name}` — **{ACTION}**", f"- Starting state: `{start_state}`"]
+
+          if ACTION == 'stop':
+              if start_state in ('STOPPED', 'STOPPING'):
+                  print(f'already {start_state}; nothing to do')
+                  summary.append('- (already stopped, no-op)')
+              else:
+                  client.put(f'/cloud/project/{PROJECT}/ai/app/{APP}/stop')
+                  wait_for({'STOPPED'}, 'stop', timeout_s=300)
+                  summary.append('- ✅ Stopped — GPU billing halted')
+          elif ACTION == 'start':
+              if start_state in ('RUNNING', 'STARTING', 'PENDING', 'SCALING'):
+                  print(f'already {start_state}; nothing to do')
+                  summary.append('- (already running, no-op)')
+              else:
+                  client.put(f'/cloud/project/{PROJECT}/ai/app/{APP}/start')
+                  wait_for({'RUNNING'}, 'start', timeout_s=900)
+                  info = get_app()
+                  url = (info.get('status') or {}).get('url', '?')
+                  summary.append(f'- ✅ Running at `{url}`')
+          else:
+              sys.exit(f'unknown action {ACTION!r}')
+
+          gh_summary = os.environ.get('GITHUB_STEP_SUMMARY')
+          if gh_summary:
+              with open(gh_summary, 'w') as f:
+                  f.write("\n".join(summary))
+          PY
